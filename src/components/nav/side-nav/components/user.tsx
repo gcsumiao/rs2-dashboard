@@ -14,7 +14,7 @@ export default function User() {
             height={36}
           />
           <div className="flex flex-col">
-            <span className="text-sm font-medium">Name</span>
+            <span className="text-sm font-medium">Ginny Chen</span>
             <span className="text-xs text-muted-foreground">Agent Admin</span>
           </div>
         </div>

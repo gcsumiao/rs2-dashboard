@@ -1,4 +1,6 @@
 import { dbQuery } from "@/lib/rs2-db"
+import { US_STATE_CODES, US_STATE_NAME_BY_CODE } from "@/lib/us-state-names"
+import { extractZip5, getZipGeoLookup } from "@/lib/zip-geo-lookup"
 
 type DateRange = { start: string; end: string; days: number }
 
@@ -31,15 +33,11 @@ type FourWeekLiftSummary = {
   }
 }
 
-type HeatPoint = {
-  zip_postal: string
-  zip5: string
-  city: string
+type StateInspection = {
   state: string
-  lat: number
-  lng: number
-  scans: number
-  percentile: number
+  state_name: string
+  inspections: number
+  top_cities: Array<{ city: string; inspections: number }>
 }
 
 export type DashboardResponse = {
@@ -95,12 +93,12 @@ export type DashboardResponse = {
   }>
   ltlRetailers: Array<{ buy_from: string; inspections: number; total_buy_clicks: number }>
   ltlClickedAccounts: Array<{ account_id: string; user_email: string; inspections: number; total_buy_clicks: number }>
-  zipHeatPoints: HeatPoint[]
-  zipHeatMeta: {
-    points_with_centroid: number
+  stateInspections: StateInspection[]
+  geoStateMeta: {
+    states_with_inspections: number
+    zip5_with_lookup: number
     points_total_zip5: number
-    truncated: boolean
-    missing_centroid_lookup: boolean
+    missing_geo_lookup: boolean
   }
   fourWeekLift: FourWeekLiftSummary
   dataGaps: Array<{ question: string; status: "blocked" | "skipped"; reason: string; required_source: string }>
@@ -115,7 +113,6 @@ export type DashboardResponse = {
 const DEFAULT_START = "2026-02-01"
 const DEFAULT_END = "2026-02-28"
 const MAX_TOP_N = 500
-const MAX_HEAT_POINTS = 8000
 
 function parseIsoDate(dateText: string): Date {
   return new Date(`${dateText}T00:00:00Z`)
@@ -158,27 +155,6 @@ function toInt(value: unknown): number {
   if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : 0
   const parsed = Number.parseInt(String(value), 10)
   return Number.isFinite(parsed) ? parsed : 0
-}
-
-function toFloat(value: unknown): number {
-  if (value === null || value === undefined) return 0
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0
-  const parsed = Number.parseFloat(String(value))
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
-function buildPercentileMap(points: Array<{ key: string; value: number }>): Map<string, number> {
-  const sorted = [...points].sort((a, b) => a.value - b.value || a.key.localeCompare(b.key))
-  const map = new Map<string, number>()
-  if (sorted.length === 0) return map
-  if (sorted.length === 1) {
-    map.set(sorted[0].key, 100)
-    return map
-  }
-  for (let index = 0; index < sorted.length; index += 1) {
-    map.set(sorted[index].key, Math.round((index / (sorted.length - 1)) * 100))
-  }
-  return map
 }
 
 function topDelta(
@@ -331,12 +307,13 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
     topVinsRows,
     topAccountVinsRows,
     topZipPostalRows,
-    heatRows,
+    stateZipRows,
     zip5TotalRow,
     ltlRetailersRows,
     ltlClickedRows,
     qualityRow,
     unmappedRows,
+    zipGeoLookup,
     fourWeekLift,
   ] = await Promise.all([
     dbQuery<{ available_start: string | null; available_end: string | null }>(
@@ -559,7 +536,10 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
             AND zip_postal <> ''
         ),
         zip_counts AS (
-          SELECT zip_postal, COUNT(*)::bigint AS inspections
+          SELECT
+            zip_postal,
+            COALESCE(MAX(NULLIF(zip5, '')), '') AS zip5,
+            COUNT(*)::bigint AS inspections
           FROM scoped
           GROUP BY zip_postal
         ),
@@ -571,7 +551,14 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
             state,
             ROW_NUMBER() OVER (
               PARTITION BY zip_postal
-              ORDER BY COUNT(*) DESC, zip5, city, state
+              ORDER BY
+                COUNT(*) DESC,
+                CASE WHEN city <> '' THEN 0 ELSE 1 END,
+                CASE WHEN state <> '' THEN 0 ELSE 1 END,
+                CASE WHEN zip5 <> '' THEN 0 ELSE 1 END,
+                zip5,
+                city,
+                state
             ) AS rn
           FROM scoped
           GROUP BY zip_postal, zip5, city, state
@@ -580,58 +567,29 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
           zc.zip_postal,
           COALESCE(NULLIF(zm.city, ''), zl.city, '') AS city,
           COALESCE(NULLIF(zm.state, ''), zl.state, '') AS state,
-          COALESCE(zm.zip5, '') AS zip5,
+          zc.zip5,
           zc.inspections
         FROM zip_counts zc
         LEFT JOIN zip_meta zm ON zm.zip_postal = zc.zip_postal AND zm.rn = 1
-        LEFT JOIN rs2_zip_lookup zl ON zl.zip5 = zm.zip5
+        LEFT JOIN rs2_zip_lookup zl ON zl.zip5 = zc.zip5
         ORDER BY zc.inspections DESC, zc.zip_postal
         LIMIT $3
       `,
       [start, end, topN]
     ),
-    dbQuery<{ zip_postal: string; zip5: string; city: string; state: string; lat: string; lng: string; scans: string }>(
+    dbQuery<{ state: string; zip5: string; inspections: string }>(
       `
-        WITH scoped AS (
-          SELECT zip_postal, zip5, city, state
-          FROM rs2_scan
-          WHERE date_utc BETWEEN $1::date AND $2::date
-            AND zip5 <> ''
-        ),
-        zip_counts AS (
-          SELECT zip_postal, zip5, COUNT(*)::bigint AS scans
-          FROM scoped
-          GROUP BY zip_postal, zip5
-        ),
-        zip_meta AS (
-          SELECT
-            zip_postal,
-            zip5,
-            city,
-            state,
-            ROW_NUMBER() OVER (
-              PARTITION BY zip_postal
-              ORDER BY COUNT(*) DESC, zip5, city, state
-            ) AS rn
-          FROM scoped
-          GROUP BY zip_postal, zip5, city, state
-        )
         SELECT
-          zc.zip_postal,
-          zc.zip5,
-          COALESCE(NULLIF(zm.city, ''), zl.city, '') AS city,
-          COALESCE(NULLIF(zm.state, ''), zl.state, '') AS state,
-          zl.lat::text AS lat,
-          zl.lng::text AS lng,
-          zc.scans
-        FROM zip_counts zc
-        LEFT JOIN zip_meta zm ON zm.zip_postal = zc.zip_postal AND zm.rn = 1
-        LEFT JOIN rs2_zip_lookup zl ON zl.zip5 = zc.zip5
-        WHERE zl.lat IS NOT NULL AND zl.lng IS NOT NULL
-        ORDER BY zc.scans DESC, zc.zip_postal
-        LIMIT $3
+          COALESCE(NULLIF(state, ''), '') AS state,
+          zip5,
+          COUNT(*)::bigint AS inspections
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+          AND zip5 <> ''
+        GROUP BY state, zip5
+        ORDER BY inspections DESC, state, zip5
       `,
-      [start, end, MAX_HEAT_POINTS + 500]
+      [start, end]
     ),
     dbQuery<{ points_total_zip5: string }>(
       `
@@ -720,6 +678,7 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
         LIMIT 20
       `
     ),
+    getZipGeoLookup(),
     loadFourWeekLift(),
   ])
 
@@ -730,28 +689,51 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
   const scans = toInt(overview?.scans)
   const scanLift = hasPriorData ? ((scans - priorScans) / priorScans) * 100 : null
 
-  const heatBase = heatRows.map((row) => ({
-    key: `${row.zip_postal}|${row.zip5}`,
-    zip_postal: row.zip_postal,
-    zip5: row.zip5,
-    city: row.city || "",
-    state: row.state || "",
-    lat: toFloat(row.lat),
-    lng: toFloat(row.lng),
-    scans: toInt(row.scans),
-  }))
-  const heatPercentiles = buildPercentileMap(heatBase.map((row) => ({ key: row.key, value: row.scans })))
-  const truncated = heatBase.length > MAX_HEAT_POINTS
-  const zipHeatPoints = (truncated ? heatBase.slice(0, MAX_HEAT_POINTS) : heatBase).map((row) => ({
-    zip_postal: row.zip_postal,
-    zip5: row.zip5,
-    city: row.city,
-    state: row.state,
-    lat: row.lat,
-    lng: row.lng,
-    scans: row.scans,
-    percentile: heatPercentiles.get(row.key) ?? 0,
-  }))
+  const topZipPostal = topZipPostalRows.map((row) => {
+    const zip5 = row.zip5 || extractZip5(row.zip_postal)
+    const lookup = zip5 ? zipGeoLookup.get(zip5) : undefined
+    return {
+      zip_postal: row.zip_postal,
+      city: row.city || lookup?.city || "",
+      state: (row.state || lookup?.state || "").toUpperCase(),
+      zip5,
+      inspections: toInt(row.inspections),
+    }
+  })
+
+  const stateTotals = new Map<string, number>()
+  const stateCityTotals = new Map<string, Map<string, number>>()
+  const zip5WithLookup = new Set<string>()
+
+  for (const row of stateZipRows) {
+    const zip5 = row.zip5 || ""
+    const lookup = zip5 ? zipGeoLookup.get(zip5) : undefined
+    const stateCode = (row.state || lookup?.state || "").toUpperCase()
+    if (!stateCode || !US_STATE_CODES.has(stateCode)) continue
+
+    const inspections = toInt(row.inspections)
+    stateTotals.set(stateCode, (stateTotals.get(stateCode) ?? 0) + inspections)
+
+    if (!lookup) continue
+    zip5WithLookup.add(zip5)
+    if (!lookup.city) continue
+
+    const cityTotals = stateCityTotals.get(stateCode) ?? new Map<string, number>()
+    cityTotals.set(lookup.city, (cityTotals.get(lookup.city) ?? 0) + inspections)
+    stateCityTotals.set(stateCode, cityTotals)
+  }
+
+  const stateInspections = Array.from(stateTotals.entries())
+    .map(([state, inspections]) => ({
+      state,
+      state_name: US_STATE_NAME_BY_CODE[state] ?? state,
+      inspections,
+      top_cities: Array.from(stateCityTotals.get(state)?.entries() ?? [])
+        .sort((a, b) => (b[1] === a[1] ? a[0].localeCompare(b[0]) : b[1] - a[1]))
+        .slice(0, 3)
+        .map(([city, cityInspections]) => ({ city, inspections: cityInspections })),
+    }))
+    .sort((a, b) => (b.inspections === a.inspections ? a.state.localeCompare(b.state) : b.inspections - a.inspections))
 
   const quality = qualityRow[0]
   const generatedAt = quality?.generated_at_utc ?? new Date().toISOString()
@@ -810,13 +792,7 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
       vehicle_engine: "",
       inspections: toInt(row.inspections),
     })),
-    topZipPostal: topZipPostalRows.map((row) => ({
-      zip_postal: row.zip_postal,
-      city: row.city || "",
-      state: row.state || "",
-      zip5: row.zip5 || "",
-      inspections: toInt(row.inspections),
-    })),
+    topZipPostal,
     ltlRetailers: ltlRetailersRows.map((row) => ({
       buy_from: row.buy_from,
       inspections: toInt(row.inspections),
@@ -828,12 +804,12 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
       inspections: toInt(row.inspections),
       total_buy_clicks: toInt(row.total_buy_clicks),
     })),
-    zipHeatPoints,
-    zipHeatMeta: {
-      points_with_centroid: heatBase.length,
+    stateInspections,
+    geoStateMeta: {
+      states_with_inspections: stateInspections.length,
+      zip5_with_lookup: zip5WithLookup.size,
       points_total_zip5: toInt(zip5TotalRow[0]?.points_total_zip5),
-      truncated,
-      missing_centroid_lookup: heatBase.length === 0,
+      missing_geo_lookup: zip5WithLookup.size === 0,
     },
     fourWeekLift,
     dataGaps: [

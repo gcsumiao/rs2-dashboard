@@ -38,6 +38,26 @@ REQUIRED_OUTPUT_FILES = [
     "quality_audit.json",
 ]
 
+BUYNOW_RETAILER_CANONICAL = {
+    "advance auto parts": "Advance auto parts",
+    "amazon": "Amazon",
+    "auto value": "Auto Value",
+    "autozone": "AutoZone",
+    "blcktec": "BLCKTEC",
+    "bumper to bumper": "Bumper to Bumper",
+    "canadian tire": "Canadian Tire",
+    "carquest": "CARQUEST",
+    "ebay": "eBay",
+    "harbor freight": "Harbor Freight",
+    "lordco auto parts": "Lordco Auto Parts",
+    "napa": "NAPA",
+    "obdspace": "OBDSpace",
+    "o'reilly": "O'Reilly",
+    "pep boys": "Pep Boys",
+    "summit racing": "Summit Racing",
+    "walmart": "Walmart",
+}
+
 STATE_CENTROIDS: Dict[str, Tuple[float, float]] = {
     "AL": (32.806671, -86.79113),
     "AK": (61.370716, -152.404419),
@@ -159,6 +179,16 @@ class MappingData:
     conflicts: Dict[Tuple[str, str], List[str]]
 
 
+@dataclass
+class BuyNowClickRow:
+    report_id: str
+    click_id: str
+    clicked_utc: datetime
+    email: str
+    buy_from: str
+    clicked_account_id: str
+
+
 def parse_datetime(raw: str) -> Optional[datetime]:
     value = (raw or "").strip()
     if not value or value in NULL_TOKENS:
@@ -206,6 +236,74 @@ def extract_zip5(zip_postal: str) -> str:
     if ZIP9_RE.match(zip_postal):
         return zip_postal[:5]
     return ""
+
+
+def canonicalize_buynow_retailer(value: str) -> str:
+    retailer = normalize_nullable(value)
+    if not retailer:
+        return ""
+    key = re.sub(r"\s+", " ", retailer.lower()).strip()
+    return BUYNOW_RETAILER_CANONICAL.get(key, retailer)
+
+
+def build_csv_header_positions(header: List[str]) -> Dict[str, List[int]]:
+    positions: Dict[str, List[int]] = defaultdict(list)
+    for idx, name in enumerate(header):
+        key = normalize_nullable(name).lower()
+        if key:
+            positions[key].append(idx)
+    return positions
+
+
+def get_csv_value(
+    row: List[str],
+    header_positions: Dict[str, List[int]],
+    *names: str,
+    prefer_last: bool = False,
+) -> str:
+    for name in names:
+        indices = header_positions.get(name.lower(), [])
+        if not indices:
+            continue
+        idx = indices[-1] if prefer_last else indices[0]
+        if idx < len(row):
+            return normalize_nullable(row[idx])
+    return ""
+
+
+def parse_buynow_click_row(
+    row: List[str],
+    header_positions: Dict[str, List[int]],
+) -> Optional[BuyNowClickRow]:
+    report_id = get_csv_value(row, header_positions, "ReportId", "DiagnosticReportId")
+    click_id = get_csv_value(row, header_positions, "Id")
+    clicked_dt_raw = get_csv_value(row, header_positions, "ClickedDateTimeUTC")
+    if not report_id or not click_id or not clicked_dt_raw:
+        return None
+
+    clicked_utc = parse_datetime(clicked_dt_raw)
+    if clicked_utc is None:
+        fallback_dt = get_csv_value(
+            row,
+            header_positions,
+            "CreatedDateTimeUTC",
+            "ReportCreatedDateTimeUTC",
+        )
+        clicked_utc = parse_datetime(fallback_dt)
+    if clicked_utc is None:
+        return None
+
+    buy_from = canonicalize_buynow_retailer(get_csv_value(row, header_positions, "BuyFrom", "Retailer"))
+    clicked_account_id = get_csv_value(row, header_positions, "AccountId", prefer_last=True)
+    email = get_csv_value(row, header_positions, "Email").lower()
+    return BuyNowClickRow(
+        report_id=report_id,
+        click_id=click_id,
+        clicked_utc=clicked_utc,
+        email=email,
+        buy_from=buy_from,
+        clicked_account_id=clicked_account_id,
+    )
 
 
 def stable_hash(text: str) -> int:
@@ -674,34 +772,20 @@ def process_buynow_clicks(
         header = next(reader, None)
         if not header:
             return {}, {"rows": 0, "rows_written": 0}
-
-        idx_report = 0
-        idx_created = 1
-        idx_email = 11
-        idx_buy_from = 22
-        idx_click_id = 23
-        idx_clicked_account = 29
-        idx_clicked_dt = 30
+        header_positions = build_csv_header_positions(header)
 
         for row in reader:
             row_count += 1
-            report_id = normalize_nullable(row[idx_report] if idx_report < len(row) else "")
-            click_id = normalize_nullable(row[idx_click_id] if idx_click_id < len(row) else "")
-            clicked_dt_raw = normalize_nullable(row[idx_clicked_dt] if idx_clicked_dt < len(row) else "")
-            if not report_id or not click_id or not clicked_dt_raw:
+            click = parse_buynow_click_row(row, header_positions)
+            if click is None:
                 continue
 
-            created = parse_datetime(row[idx_created] if idx_created < len(row) else "")
-            if created is None:
-                created = parse_datetime(clicked_dt_raw)
-            if created is None:
-                continue
-            if min_dt is None or created < min_dt:
-                min_dt = created
-            if max_dt is None or created > max_dt:
-                max_dt = created
+            if min_dt is None or click.clicked_utc < min_dt:
+                min_dt = click.clicked_utc
+            if max_dt is None or click.clicked_utc > max_dt:
+                max_dt = click.clicked_utc
 
-            date_pt = to_pt_date(created, tz)
+            date_pt = to_pt_date(click.clicked_utc, tz)
             slot = day_reports.setdefault(
                 date_pt,
                 {
@@ -713,22 +797,18 @@ def process_buynow_clicks(
                 },
             )
 
-            buy_from = normalize_nullable(row[idx_buy_from] if idx_buy_from < len(row) else "")
-            clicked_account = normalize_nullable(row[idx_clicked_account] if idx_clicked_account < len(row) else "")
-            email = normalize_nullable(row[idx_email] if idx_email < len(row) else "").lower()
-
-            if buy_from:
-                slot["buy_from_reports"][buy_from].add(report_id)
-                slot["buy_from_clicks"][buy_from] += 1
-            if clicked_account:
-                slot["clicked_reports"][clicked_account].add(report_id)
-                slot["clicked_clicks"][clicked_account] += 1
-                if email:
-                    slot["clicked_emails"][f"{clicked_account}|||{email}"] += 1
-                    clicked_account_email_counter[clicked_account][email] += 1
+            if click.buy_from:
+                slot["buy_from_reports"][click.buy_from].add(click.report_id)
+                slot["buy_from_clicks"][click.buy_from] += 1
+            if click.clicked_account_id:
+                slot["clicked_reports"][click.clicked_account_id].add(click.report_id)
+                slot["clicked_clicks"][click.clicked_account_id] += 1
+                if click.email:
+                    slot["clicked_emails"][f"{click.clicked_account_id}|||{click.email}"] += 1
+                    clicked_account_email_counter[click.clicked_account_id][click.email] += 1
 
             row_written += 1
-            distinct_reports.add(report_id)
+            distinct_reports.add(click.report_id)
 
     clicked_account_email = pick_primary(clicked_account_email_counter)
     summary = {

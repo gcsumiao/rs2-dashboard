@@ -3,7 +3,7 @@
 import { startTransition, useDeferredValue, useEffect, useRef, useState } from "react"
 import dynamic from "next/dynamic"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Activity, CalendarDays, Car, MapPinned, TrendingUp, Users } from "lucide-react"
+import { Activity, CalendarDays, Car, Download, MapPinned, TrendingUp, Users } from "lucide-react"
 import {
   Area,
   AreaChart,
@@ -69,21 +69,17 @@ type DashboardPayload = {
   topZipPostal: Array<{ zip_postal: string; city: string; state: string; zip5: string; inspections: number }>
   ltlRetailers: Array<{ buy_from: string; inspections: number; total_buy_clicks: number }>
   ltlClickedAccounts: Array<{ account_id: string; user_email: string; inspections: number; total_buy_clicks: number }>
-  zipHeatPoints: Array<{
-    zip_postal: string
-    zip5: string
-    city: string
+  stateInspections: Array<{
     state: string
-    lat: number
-    lng: number
-    scans: number
-    percentile: number
+    state_name: string
+    inspections: number
+    top_cities: Array<{ city: string; inspections: number }>
   }>
-  zipHeatMeta: {
-    points_with_centroid: number
+  geoStateMeta: {
+    states_with_inspections: number
+    zip5_with_lookup: number
     points_total_zip5: number
-    truncated: boolean
-    missing_centroid_lookup: boolean
+    missing_geo_lookup: boolean
   }
   fourWeekLift: {
     status: string
@@ -135,6 +131,55 @@ function shortDate(datePt: string): string {
   return datePt.slice(5)
 }
 
+function formatUtcDate(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
+
+function getPreviousMonthRange(now: Date = new Date()): { start: string; end: string } {
+  const year = now.getUTCFullYear()
+  const month = now.getUTCMonth()
+  const start = new Date(Date.UTC(year, month - 1, 1))
+  const end = new Date(Date.UTC(year, month, 0))
+  return {
+    start: formatUtcDate(start),
+    end: formatUtcDate(end),
+  }
+}
+
+function csvCell(value: string | number): string {
+  const text = String(value)
+  if (!/[",\r\n]/.test(text)) {
+    return text
+  }
+  return `"${text.replaceAll('"', '""')}"`
+}
+
+function sanitizeFileName(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+
+  return slug || "table-results"
+}
+
+function downloadCsv(title: string, headers: string[], rows: Array<Array<string | number>>) {
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")
+  const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8;" })
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement("a")
+
+  link.href = url
+  link.download = `${sanitizeFileName(title)}-${new Date().toISOString().slice(0, 10)}.csv`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+
+  window.setTimeout(() => {
+    window.URL.revokeObjectURL(url)
+  }, 0)
+}
+
 function TopTable({
   title,
   subtitle,
@@ -148,9 +193,21 @@ function TopTable({
 }) {
   return (
     <Card className="bg-card border border-border">
-      <CardHeader className="pb-2">
-        <CardTitle className="text-base font-medium">{title}</CardTitle>
-        <p className="text-xs text-muted-foreground">{subtitle}</p>
+      <CardHeader className="flex flex-col gap-3 pb-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-1">
+          <CardTitle className="text-base font-medium">{title}</CardTitle>
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="self-start bg-transparent"
+          disabled={rows.length === 0}
+          onClick={() => downloadCsv(title, headers, rows)}
+        >
+          <Download className="h-4 w-4" />
+          Download CSV
+        </Button>
       </CardHeader>
       <CardContent>
         <div className="max-h-[460px] overflow-auto rounded-md border border-border">
@@ -213,6 +270,8 @@ export function DashboardClient() {
   const deferredAppliedTopN = useDeferredValue(appliedTopN)
   const lastRequestKeyRef = useRef("")
   const inFlightRef = useRef<AbortController | null>(null)
+  const previousMonthRange = getPreviousMonthRange()
+  const isPreviousMonthApplied = appliedStart === previousMonthRange.start && appliedEnd === previousMonthRange.end
 
   useEffect(() => {
     setStart((prev) => (prev === appliedStart ? prev : appliedStart))
@@ -299,6 +358,12 @@ export function DashboardClient() {
     replaceParams({ topN: String(Math.max(1, Math.min(500, Math.floor(topN || 100)))) })
   }
 
+  const onApplyPreviousMonth = () => {
+    setStart(previousMonthRange.start)
+    setEnd(previousMonthRange.end)
+    replaceParams(previousMonthRange)
+  }
+
   const headerDescription = data
     ? `Range ${data.meta.start} to ${data.meta.end} (UTC) | top ${data.meta.topN} rows`
     : "Loading RS2 inspection metrics"
@@ -313,7 +378,21 @@ export function DashboardClient() {
 
       <Card className="sticky top-3 z-10 mb-6 border border-border bg-card/95 backdrop-blur">
         <CardContent className="pt-4">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                Quick Range
+              </span>
+              <Button
+                variant={isPreviousMonthApplied ? "default" : "outline"}
+                size="sm"
+                className={isPreviousMonthApplied ? "" : "bg-transparent"}
+                onClick={onApplyPreviousMonth}
+              >
+                Previous Month
+              </Button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <Input type="date" value={start} onChange={(event) => setStart(event.target.value)} />
               <Input type="date" value={end} onChange={(event) => setEnd(event.target.value)} />
               <Input
@@ -331,6 +410,7 @@ export function DashboardClient() {
                   Apply TopN
                 </Button>
               </div>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -521,8 +601,8 @@ export function DashboardClient() {
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           <div className="xl:col-span-2">
             <UsZipHeatmap
-              points={data.zipHeatPoints}
-              missingLookup={data.zipHeatMeta.missing_centroid_lookup}
+              states={data.stateInspections}
+              missingLookup={data.geoStateMeta.missing_geo_lookup}
             />
           </div>
           <div className="space-y-4">
@@ -541,12 +621,12 @@ export function DashboardClient() {
             />
             <Card className="border border-border bg-card">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base font-medium">Heatmap Coverage</CardTitle>
+                <CardTitle className="text-base font-medium">State Map Coverage</CardTitle>
               </CardHeader>
               <CardContent className="space-y-1 text-xs text-muted-foreground">
-                <p>ZIP5 with centroid: {numberLabel(data.zipHeatMeta.points_with_centroid)}</p>
-                <p>Total ZIP5 in range: {numberLabel(data.zipHeatMeta.points_total_zip5)}</p>
-                <p>Truncated for rendering: {data.zipHeatMeta.truncated ? "Yes" : "No"}</p>
+                <p>States with inspections: {numberLabel(data.geoStateMeta.states_with_inspections)}</p>
+                <p>ZIP5 resolved from lookup: {numberLabel(data.geoStateMeta.zip5_with_lookup)}</p>
+                <p>Total ZIP5 in range: {numberLabel(data.geoStateMeta.points_total_zip5)}</p>
               </CardContent>
             </Card>
           </div>

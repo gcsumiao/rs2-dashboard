@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List, Tuple
 
 from build_rs2_data import (
     ZIP5_RE,
+    build_csv_header_positions,
     build_report_part_counts,
     extract_zip5,
     geo_lookup_csv_has_payload,
@@ -23,6 +24,7 @@ from build_rs2_data import (
     normalize_nullable,
     normalize_vin,
     normalize_zip_postal,
+    parse_buynow_click_row,
     parse_datetime,
     resolve_tool_name,
 )
@@ -42,6 +44,27 @@ class MonthBundle:
     fix_csv: Path
     buynow_csv: Path
     scan_csv: Path
+
+
+VALIDATION_RETAILER_BUCKETS = {
+    "advance auto parts": "Advance auto parts",
+    "amazon": "Amazon",
+    "auto value": "Auto Value",
+    "autozone": "AutoZone",
+    "blcktec": "BLCKTEC",
+    "canadian tire": "Canadian Tire",
+    "carquest": "CARQUEST",
+    "ebay": "eBay",
+    "harbor freight": "Harbor Freight",
+    "napa": "NAPA",
+    "obdspace": "OBDSpace",
+    "o'reilly": "O'Reilly",
+    "other": "Other",
+    "pep boys": "Pep Boys",
+    "summit racing": "Summit Racing",
+    "total": "Total",
+    "walmart": "Walmart",
+}
 
 
 def load_schema_sql(project_root: Path) -> str:
@@ -78,11 +101,13 @@ def discover_month_bundles(raw_root: Path) -> List[MonthBundle]:
     return bundles
 
 
-def normalize_retailer_key(value: str) -> str:
-    lowered = normalize_nullable(value).lower()
-    lowered = lowered.replace("&", "and")
-    lowered = re.sub(r"[^a-z0-9]+", "", lowered)
-    return lowered
+def normalize_validation_retailer(value: str, *, default_other: bool = True) -> str:
+    # Validation uses a fixed retailer whitelist. Freeform BuyFrom values should
+    # reconcile into Other instead of being fuzzy-matched into named buckets.
+    lowered = re.sub(r"\s+", " ", normalize_nullable(value).lower()).strip()
+    if not lowered:
+        return "Other" if default_other else ""
+    return VALIDATION_RETAILER_BUCKETS.get(lowered, "Other" if default_other else "")
 
 
 def load_validation_expected(validation_dir: Path) -> Dict[str, Dict[str, Tuple[str, int]]]:
@@ -99,7 +124,7 @@ def load_validation_expected(validation_dir: Path) -> Dict[str, Dict[str, Tuple[
         with path.open(newline="", encoding="utf-8-sig") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
-                retailer = normalize_nullable(row.get("Retailer", ""))
+                retailer = normalize_validation_retailer(row.get("Retailer", ""), default_other=False)
                 scans_raw = normalize_nullable(row.get("TotalUniqueReportScans", "0"))
                 if not retailer:
                     continue
@@ -107,7 +132,9 @@ def load_validation_expected(validation_dir: Path) -> Dict[str, Dict[str, Tuple[
                     scans = int(float(scans_raw))
                 except ValueError:
                     scans = 0
-                month_expected[normalize_retailer_key(retailer)] = (retailer, scans)
+                prev = month_expected.get(retailer)
+                prev_count = prev[1] if prev else 0
+                month_expected[retailer] = (retailer, prev_count + scans)
         expected[month] = month_expected
     return expected
 
@@ -247,35 +274,27 @@ def copy_buynow_rows(conn: psycopg.Connection, bundles: Iterable[MonthBundle]) -
             for bundle in bundles:
                 with bundle.buynow_csv.open(newline="", encoding="utf-8-sig") as fh:
                     reader = csv.reader(fh)
-                    _header = next(reader, None)
-                    if _header is None:
+                    header = next(reader, None)
+                    if header is None:
                         continue
-
-                    idx_report = 0
-                    idx_created = 1
-                    idx_email = 11
-                    idx_buy_from = 22
-                    idx_click_id = 23
-                    idx_clicked_account = 29
-                    idx_clicked_dt = 30
+                    header_positions = build_csv_header_positions(header)
 
                     for row in reader:
-                        report_id = normalize_nullable(row[idx_report] if idx_report < len(row) else "")
-                        click_id = normalize_nullable(row[idx_click_id] if idx_click_id < len(row) else "")
-                        clicked_dt_raw = normalize_nullable(row[idx_clicked_dt] if idx_clicked_dt < len(row) else "")
-                        if not report_id or not click_id or not clicked_dt_raw:
+                        click = parse_buynow_click_row(row, header_positions)
+                        if click is None:
                             continue
 
-                        created = parse_datetime(row[idx_created] if idx_created < len(row) else "")
-                        if created is None:
-                            created = parse_datetime(clicked_dt_raw)
-                        if created is None:
-                            continue
-
-                        email = normalize_nullable(row[idx_email] if idx_email < len(row) else "").lower()
-                        buy_from = normalize_nullable(row[idx_buy_from] if idx_buy_from < len(row) else "")
-                        clicked_account = normalize_nullable(row[idx_clicked_account] if idx_clicked_account < len(row) else "")
-                        copy.write_row((report_id, click_id, created, created.date(), email, buy_from, clicked_account))
+                        copy.write_row(
+                            (
+                                click.report_id,
+                                click.click_id,
+                                click.clicked_utc,
+                                click.clicked_utc.date(),
+                                click.email,
+                                click.buy_from,
+                                click.clicked_account_id,
+                            )
+                        )
                         inserted += 1
     return inserted
 
@@ -298,12 +317,11 @@ def run_validation_checks(
     actual_by_month: Dict[str, Dict[str, Tuple[str, int]]] = {}
     for source_month, buy_from, scans in actual_rows:
         month = str(source_month or "")
-        retailer = normalize_nullable(str(buy_from or ""))
-        key = normalize_retailer_key(retailer if retailer else "other")
+        retailer = normalize_validation_retailer(str(buy_from or ""))
         month_map = actual_by_month.setdefault(month, {})
-        prev = month_map.get(key)
+        prev = month_map.get(retailer)
         prev_count = prev[1] if prev else 0
-        month_map[key] = (retailer if retailer else "Other", prev_count + int(scans))
+        month_map[retailer] = (retailer, prev_count + int(scans))
 
     inserted = 0
     mismatches: List[str] = []
@@ -313,16 +331,17 @@ def run_validation_checks(
             actual = actual_by_month.get(month, {})
             keys = sorted(set(expected.keys()) | set(actual.keys()))
 
-            for key in keys:
-                expected_label, expected_count = expected.get(key, (actual.get(key, ("", 0))[0], 0))
-                actual_label, actual_count = actual.get(key, (expected_label, 0))
+            for retailer_name in keys:
+                expected_label, expected_count = expected.get(
+                    retailer_name, (actual.get(retailer_name, ("", 0))[0], 0)
+                )
+                actual_label, actual_count = actual.get(retailer_name, (expected_label, 0))
 
-                if key == "total":
-                    retailer_name = "Total"
-                    actual_total = sum(value[1] for k, value in actual.items() if k != "total")
+                if retailer_name == "Total":
+                    actual_total = sum(value[1] for key, value in actual.items() if key != "Total")
                     actual_count = actual_total
                 else:
-                    retailer_name = expected_label or actual_label or key
+                    retailer_name = expected_label or actual_label or retailer_name
 
                 delta = actual_count - expected_count
                 cur.execute(
