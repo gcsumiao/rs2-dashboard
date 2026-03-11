@@ -3,11 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "npm run build:rs2data && next dev",
-    "dev:rs2": "npm run dev",
-    "dev:force": "npm run build:rs2data:force && next dev",
+    "dev": "next dev",
     "build:rs2data": "python3 scripts/build_rs2_data.py --timezone UTC",
     "build:rs2data:force": "python3 scripts/build_rs2_data.py --timezone UTC --force",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
+    "db:load:rs2": "python3 scripts/load_rs2_postgres.py",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"
@@ -26,6 +28,7 @@
     "next": "15.0.6",
     "next-themes": "^0.3.0",
     "maplibre-gl": "^5.6.1",
+    "pg": "^8.16.3",
     "react": "19.0.0-rc-69d4b800-20241021",
     "react-day-picker": "8.10.1",
     "react-dom": "19.0.0-rc-69d4b800-20241021",
@@ -36,6 +39,7 @@
   "devDependencies": {
     "@trivago/prettier-plugin-sort-imports": "^4.3.0",
     "@types/node": "^20",
+    "@types/pg": "^8.15.5",
     "@types/react": "npm:types-react@19.0.0-rc.1",
     "@types/react-dom": "npm:types-react-dom@19.0.0-rc.1",
     "@typescript-eslint/eslint-plugin": "^8.3.0",

@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: rs2-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: rs2
+      POSTGRES_PASSWORD: rs2
+      POSTGRES_DB: rs2_dashboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - rs2_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rs2 -d rs2_dashboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  rs2_pgdata:

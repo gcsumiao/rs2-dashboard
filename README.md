@@ -1,81 +1,84 @@
-# RS2 Dashboard
+# RS2 Dashboard (PostgreSQL Mode)
 
-Interactive RS2 inspection dashboard built on Next.js + VisActor template shell.
+Interactive RS2 inspection dashboard backed by local PostgreSQL 18 in Docker.
 
-## What This Repo Includes
+## Architecture
 
-- Single-page tabbed RS2 dashboard:
-  - Overview / Users / Tools / VIN / Geo / LTL / Data Gaps
-- UTC-only daily bucketing (ETL, API, UI)
-- API endpoint:
-  - `GET /api/rs2/dashboard?start=YYYY-MM-DD&end=YYYY-MM-DD&topN=number&tz=UTC`
-- Precomputed RS2 artifacts under `data/rs2/` (generated locally, not committed)
+- App: Next.js
+- DB: PostgreSQL 18 (`docker-compose.yml`)
+- Data source: `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data`
+- API: `GET /api/rs2/dashboard?start=YYYY-MM-DD&end=YYYY-MM-DD&topN=number&tz=UTC`
+- Time basis: UTC end-to-end
 
-## Required Local Inputs
+Snapshot JSON fast-path is removed from dashboard API logic. The API now queries PostgreSQL directly.
 
-Place these files in the parent workspace (default expected paths):
+## Prerequisites
 
-- `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/202602/4-week lift scan.csv`
-- `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/202602/fix-part raw extract.csv`
-- `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/202602/BuyNow raw extract.csv`
-- `/Users/sumiaoc/Desktop/RS2_dashboard/RS2tool_mapping/RS2_Tool_05122025_01.xlsx`
-- `/Users/sumiaoc/Desktop/RS2_dashboard/zipmap.csv`
+- Docker Desktop
+- Python 3
+- Node.js / npm
 
-## Local Run
+## One-Time Setup
 
-1. Install dependencies:
+1. Install node dependencies:
 
 ```bash
-npm install
+npm install --legacy-peer-deps
 ```
 
-2. Build RS2 artifacts:
+2. Install Python loader dependency:
 
 ```bash
-npm run build:rs2data
+python3 -m pip install -r scripts/requirements-rs2-db.txt
 ```
 
-`build:rs2data` now skips rebuild when inputs are unchanged. To force a full rebuild:
+3. Start PostgreSQL container:
 
 ```bash
-npm run build:rs2data:force
+npm run db:up
 ```
 
-3. Run app:
+4. Load RS2 raw files into PostgreSQL:
+
+```bash
+npm run db:load:rs2
+```
+
+5. Run dashboard:
 
 ```bash
 npm run dev
 ```
-`npm run dev` already includes incremental `build:rs2data`.
 
 Open [http://localhost:3000](http://localhost:3000).
 
-## Key Data Rules Implemented
+## Daily Workflow
+
+- If raw data did not change: just run `npm run dev`.
+- If raw data changed: run `npm run db:load:rs2` then `npm run dev`.
+
+## Commands
+
+- `npm run db:up`: start PostgreSQL container
+- `npm run db:down`: stop PostgreSQL container
+- `npm run db:logs`: follow PostgreSQL logs
+- `npm run db:load:rs2`: truncate and reload RS2 tables from raw extracts
+
+## Default Inputs (Auto-Resolved)
+
+Loader defaults:
+
+- raw root: `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data` (recursive search)
+- mapping: `/Users/sumiaoc/Desktop/RS2_dashboard/RS2tool_mapping/RS2_Tool_05122025_01.xlsx`
+- geo source priority:
+  1. `data/geo/us_zip_centroids.csv` (if already populated)
+  2. `/Users/sumiaoc/Desktop/RS2_dashboard/zipmap.csv`
+
+## Data Rules Implemented
 
 - Tool mapping key: `UsbProductId + CustomerId`
-- Fallback mapping: blank customer + matching USB (ex: `937 -> 5110 / 3020RS`)
-- Fix type mapping for part counts:
+- Fallback mapping: blank customer + matching USB (`937 -> 5110 / 3020RS`)
+- FixType mapping:
   - `2 = ABS`
   - `0 = CEL`
   - `3 = SRS`
-- Default range: `2026-02-01` to `2026-02-28`
-
-## Generated Artifacts
-
-`npm run build:rs2data` writes:
-
-- `data/rs2/snapshot_default.json`
-- `data/rs2/scan_day_agg.json`
-- `data/rs2/buynow_click_day_reports.json`
-- `data/rs2/daily_scan_metrics.json`
-- `data/rs2/lookups.json`
-- `data/rs2/quality_audit.json`
-- `data/rs2/four_week_lift_summary.json`
-
-## Vercel Deployment Notes
-
-- Framework preset: Next.js
-- Install command: `npm install`
-- Build command: `npm run build:rs2data && npm run build`
-- Output: default Next.js output
-- Ensure raw/mapping inputs are available in build environment or replace ETL input paths with mounted storage.

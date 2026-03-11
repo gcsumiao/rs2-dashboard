@@ -1,11 +1,11 @@
-import { readFile } from "fs/promises"
-import path from "path"
+import { dbQuery } from "@/lib/rs2-db"
 
-type DailyMetric = {
-  date_pt: string
-  scans: number
-  unique_users: number
-  unique_vins: number
+type DateRange = { start: string; end: string; days: number }
+
+type DashboardParams = {
+  start: string
+  end: string
+  topN: number
 }
 
 type FourWeekLiftSummary = {
@@ -31,73 +31,6 @@ type FourWeekLiftSummary = {
   }
 }
 
-type QualityAudit = {
-  generated_at_utc: string
-  row_counts?: {
-    scan_level?: {
-      top_unmapped_usb?: Array<[string, number]>
-    }
-  }
-  mapping?: {
-    fallback_example_usb_937_blank_customer?: string
-    ambiguous_mapping_keys?: Array<unknown>
-  }
-}
-
-type ScanDayAgg = {
-  scans: number
-  users: Map<string, number>
-  user_emails: Map<string, number>
-  tool_stats: Map<string, { inspections: number; abs_parts: number; srs_parts: number; cel_parts: number }>
-  vins: Map<string, number>
-  account_vins: Map<string, number>
-  zip_postal: Map<string, number>
-  zip5: Map<string, number>
-}
-
-type BuyNowDayAgg = {
-  buy_from: Map<string, { reports: string[]; clicks: number }>
-  clicked_account: Map<string, { reports: string[]; clicks: number; emails: Array<[string, number]> }>
-}
-
-type LookupData = {
-  user_lookup: Record<string, string>
-  vin_lookup: Record<string, { year: string; make: string; model: string; engine: string }>
-  account_vin_lookup: Record<string, { email: string; year: string; make: string; model: string; engine: string }>
-  zip_lookup: Record<string, { city: string; state: string; zip5: string; lat?: string; lng?: string }>
-  clicked_account_email_lookup: Record<string, string>
-  mapping_fallback_usb937: string | null
-  ambiguous_mapping_keys: number
-}
-
-type LoadedData = {
-  snapshotDefault: DashboardResponse | null
-  snapshotDefaultTopN: number
-  scanDayAgg: Map<string, ScanDayAgg>
-  buynowDayAgg: Map<string, BuyNowDayAgg>
-  dailyMetrics: DailyMetric[]
-  fourWeekLift: FourWeekLiftSummary
-  quality: QualityAudit
-  lookup: LookupData
-  availableDates: string[]
-}
-
-type SnapshotOnlyData = {
-  snapshotDefault: DashboardResponse | null
-  snapshotDefaultTopN: number
-}
-
-type DashboardParams = {
-  start: string
-  end: string
-  topN: number
-}
-
-type RankedItem = {
-  key: string
-  inspections: number
-}
-
 type HeatPoint = {
   zip_postal: string
   zip5: string
@@ -109,8 +42,6 @@ type HeatPoint = {
   percentile: number
 }
 
-type DateRange = { start: string; end: string; days: number }
-
 export type DashboardResponse = {
   meta: {
     start: string
@@ -120,7 +51,6 @@ export type DashboardResponse = {
     available_end: string
     prior_equal_range: DateRange
     has_prior_data: boolean
-    snapshot_ready?: boolean
   }
   overview: {
     scans: number
@@ -129,7 +59,7 @@ export type DashboardResponse = {
     prior_scans: number | null
     scan_lift_pct_vs_prior: number | null
   }
-  dailyTrend: DailyMetric[]
+  dailyTrend: Array<{ date_pt: string; scans: number; unique_users: number; unique_vins: number }>
   topUsers: Array<{ user_id: string; user_email: string; same_day_reports: number; inspections: number }>
   topTools: Array<{
     tool_name: string
@@ -187,67 +117,6 @@ const DEFAULT_END = "2026-02-28"
 const MAX_TOP_N = 500
 const MAX_HEAT_POINTS = 8000
 
-const STATE_CENTROIDS: Record<string, { lat: number; lng: number }> = {
-  AL: { lat: 32.806671, lng: -86.79113 },
-  AK: { lat: 61.370716, lng: -152.404419 },
-  AZ: { lat: 33.729759, lng: -111.431221 },
-  AR: { lat: 34.969704, lng: -92.373123 },
-  CA: { lat: 36.116203, lng: -119.681564 },
-  CO: { lat: 39.059811, lng: -105.311104 },
-  CT: { lat: 41.597782, lng: -72.755371 },
-  DE: { lat: 39.318523, lng: -75.507141 },
-  FL: { lat: 27.766279, lng: -81.686783 },
-  GA: { lat: 33.040619, lng: -83.643074 },
-  HI: { lat: 21.094318, lng: -157.498337 },
-  ID: { lat: 44.240459, lng: -114.478828 },
-  IL: { lat: 40.349457, lng: -88.986137 },
-  IN: { lat: 39.849426, lng: -86.258278 },
-  IA: { lat: 42.011539, lng: -93.210526 },
-  KS: { lat: 38.5266, lng: -96.726486 },
-  KY: { lat: 37.66814, lng: -84.670067 },
-  LA: { lat: 31.169546, lng: -91.867805 },
-  ME: { lat: 44.693947, lng: -69.381927 },
-  MD: { lat: 39.063946, lng: -76.802101 },
-  MA: { lat: 42.230171, lng: -71.530106 },
-  MI: { lat: 43.326618, lng: -84.536095 },
-  MN: { lat: 45.694454, lng: -93.900192 },
-  MS: { lat: 32.741646, lng: -89.678696 },
-  MO: { lat: 38.456085, lng: -92.288368 },
-  MT: { lat: 46.921925, lng: -110.454353 },
-  NE: { lat: 41.12537, lng: -98.268082 },
-  NV: { lat: 38.313515, lng: -117.055374 },
-  NH: { lat: 43.452492, lng: -71.563896 },
-  NJ: { lat: 40.298904, lng: -74.521011 },
-  NM: { lat: 34.840515, lng: -106.248482 },
-  NY: { lat: 42.165726, lng: -74.948051 },
-  NC: { lat: 35.630066, lng: -79.806419 },
-  ND: { lat: 47.528912, lng: -99.784012 },
-  OH: { lat: 40.388783, lng: -82.764915 },
-  OK: { lat: 35.565342, lng: -96.928917 },
-  OR: { lat: 44.572021, lng: -122.070938 },
-  PA: { lat: 40.590752, lng: -77.209755 },
-  RI: { lat: 41.680893, lng: -71.51178 },
-  SC: { lat: 33.856892, lng: -80.945007 },
-  SD: { lat: 44.299782, lng: -99.438828 },
-  TN: { lat: 35.747845, lng: -86.692345 },
-  TX: { lat: 31.054487, lng: -97.563461 },
-  UT: { lat: 40.150032, lng: -111.862434 },
-  VT: { lat: 44.045876, lng: -72.710686 },
-  VA: { lat: 37.769337, lng: -78.169968 },
-  WA: { lat: 47.400902, lng: -121.490494 },
-  WV: { lat: 38.491226, lng: -80.954453 },
-  WI: { lat: 44.268543, lng: -89.616508 },
-  WY: { lat: 42.755966, lng: -107.30249 },
-  DC: { lat: 38.897438, lng: -77.026817 },
-}
-
-let snapshotCachePromise: Promise<SnapshotOnlyData> | null = null
-let fullCachePromise: Promise<LoadedData> | null = null
-let fullWarmStarted = false
-let commonRangesWarmStarted = false
-const RANGE_RESPONSE_CACHE_LIMIT = 8
-const rangeResponseCache = new Map<string, DashboardResponse>()
-
 function parseIsoDate(dateText: string): Date {
   return new Date(`${dateText}T00:00:00Z`)
 }
@@ -284,538 +153,689 @@ function normalizeDateParam(value: string | null, fallback: string): string {
   return value
 }
 
-function mapFromPairs(pairs: Array<[string, number]>): Map<string, number> {
+function toInt(value: unknown): number {
+  if (value === null || value === undefined) return 0
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : 0
+  const parsed = Number.parseInt(String(value), 10)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function toFloat(value: unknown): number {
+  if (value === null || value === undefined) return 0
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0
+  const parsed = Number.parseFloat(String(value))
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function buildPercentileMap(points: Array<{ key: string; value: number }>): Map<string, number> {
+  const sorted = [...points].sort((a, b) => a.value - b.value || a.key.localeCompare(b.key))
   const map = new Map<string, number>()
-  for (const [key, value] of pairs) {
-    map.set(String(key), Number(value))
+  if (sorted.length === 0) return map
+  if (sorted.length === 1) {
+    map.set(sorted[0].key, 100)
+    return map
+  }
+  for (let index = 0; index < sorted.length; index += 1) {
+    map.set(sorted[index].key, Math.round((index / (sorted.length - 1)) * 100))
   }
   return map
 }
 
-function parseScanDayAgg(raw: string): Map<string, ScanDayAgg> {
-  const parsed = JSON.parse(raw) as {
-    dates: Record<
-      string,
-      {
-        scans: number
-        users: Array<[string, number]>
-        user_emails: Array<[string, number]>
-        tool_stats: Array<[string, number, number, number, number]>
-        vins: Array<[string, number]>
-        account_vins: Array<[string, number]>
-        zip_postal: Array<[string, number]>
-        zip5: Array<[string, number]>
-      }
-    >
-  }
-  const map = new Map<string, ScanDayAgg>()
-  for (const [datePt, slot] of Object.entries(parsed.dates ?? {})) {
-    const toolStats = new Map<string, { inspections: number; abs_parts: number; srs_parts: number; cel_parts: number }>()
-    for (const row of slot.tool_stats ?? []) {
-      toolStats.set(String(row[0]), {
-        inspections: Number(row[1]),
-        abs_parts: Number(row[2]),
-        srs_parts: Number(row[3]),
-        cel_parts: Number(row[4]),
-      })
-    }
-    map.set(datePt, {
-      scans: Number(slot.scans ?? 0),
-      users: mapFromPairs(slot.users ?? []),
-      user_emails: mapFromPairs(slot.user_emails ?? []),
-      tool_stats: toolStats,
-      vins: mapFromPairs(slot.vins ?? []),
-      account_vins: mapFromPairs(slot.account_vins ?? []),
-      zip_postal: mapFromPairs(slot.zip_postal ?? []),
-      zip5: mapFromPairs(slot.zip5 ?? []),
+function topDelta(
+  recent: Map<string, number>,
+  prior: Map<string, number>,
+  limit = 12
+): Array<{ key: string; delta: number; recent: number; prior: number }> {
+  const rows: Array<{ key: string; delta: number; recent: number; prior: number }> = []
+  const keys = new Set<string>([...recent.keys(), ...prior.keys()])
+  for (const key of keys) {
+    const recentValue = recent.get(key) ?? 0
+    const priorValue = prior.get(key) ?? 0
+    rows.push({
+      key,
+      delta: recentValue - priorValue,
+      recent: recentValue,
+      prior: priorValue,
     })
   }
-  return map
+  rows.sort((a, b) => (b.delta === a.delta ? a.key.localeCompare(b.key) : b.delta - a.delta))
+  return rows.slice(0, limit)
 }
 
-function parseBuyNowAgg(raw: string): Map<string, BuyNowDayAgg> {
-  const parsed = JSON.parse(raw) as {
-    dates: Record<
-      string,
-      {
-        buy_from: Array<[string, string[], number]>
-        clicked_account: Array<[string, string[], number, Array<[string, number]>]>
-      }
-    >
-  }
-  const map = new Map<string, BuyNowDayAgg>()
-  for (const [datePt, slot] of Object.entries(parsed.dates ?? {})) {
-    const buyFrom = new Map<string, { reports: string[]; clicks: number }>()
-    for (const row of slot.buy_from ?? []) {
-      buyFrom.set(String(row[0]), { reports: row[1] ?? [], clicks: Number(row[2] ?? 0) })
-    }
-    const clicked = new Map<string, { reports: string[]; clicks: number; emails: Array<[string, number]> }>()
-    for (const row of slot.clicked_account ?? []) {
-      clicked.set(String(row[0]), {
-        reports: row[1] ?? [],
-        clicks: Number(row[2] ?? 0),
-        emails: row[3] ?? [],
-      })
-    }
-    map.set(datePt, { buy_from: buyFrom, clicked_account: clicked })
-  }
-  return map
-}
-
-async function loadSnapshotOnly(): Promise<SnapshotOnlyData> {
-  const dataDir = path.resolve(process.cwd(), "data", "rs2")
-  const snapshotRaw = await readFile(path.join(dataDir, "snapshot_default.json"), "utf-8").catch(() => "")
-  const snapshotDefault = snapshotRaw ? (JSON.parse(snapshotRaw) as DashboardResponse) : null
-  return {
-    snapshotDefault,
-    snapshotDefaultTopN: snapshotDefault?.meta.topN ?? MAX_TOP_N,
-  }
-}
-
-async function getSnapshotOnlyData(): Promise<SnapshotOnlyData> {
-  if (!snapshotCachePromise) {
-    snapshotCachePromise = loadSnapshotOnly()
-  }
-  return snapshotCachePromise
-}
-
-async function loadFullData(): Promise<LoadedData> {
-  const dataDir = path.resolve(process.cwd(), "data", "rs2")
-  const snapshotOnly = await getSnapshotOnlyData()
-
-  const [scanAggRaw, buynowAggRaw, dailyMetricsRaw, fourWeekLiftRaw, qualityRaw, lookupRaw] = await Promise.all(
-    [
-      readFile(path.join(dataDir, "scan_day_agg.json"), "utf-8"),
-      readFile(path.join(dataDir, "buynow_click_day_reports.json"), "utf-8"),
-      readFile(path.join(dataDir, "daily_scan_metrics.json"), "utf-8"),
-      readFile(path.join(dataDir, "four_week_lift_summary.json"), "utf-8"),
-      readFile(path.join(dataDir, "quality_audit.json"), "utf-8"),
-      readFile(path.join(dataDir, "lookups.json"), "utf-8"),
-    ]
+async function loadWindowSummary(start: string, end: string): Promise<{ scans: number; users: number; vins: number }> {
+  const rows = await dbQuery<{ scans: string; users: string; vins: string }>(
+    `
+      SELECT
+        COUNT(*)::bigint AS scans,
+        COUNT(DISTINCT NULLIF(user_id, ''))::bigint AS users,
+        COUNT(DISTINCT NULLIF(vin_final, ''))::bigint AS vins
+      FROM rs2_scan
+      WHERE date_utc BETWEEN $1::date AND $2::date
+    `,
+    [start, end]
   )
-
-  const scanDayAgg = parseScanDayAgg(scanAggRaw)
-  const buynowDayAgg = parseBuyNowAgg(buynowAggRaw)
-  const dailyMetrics = JSON.parse(dailyMetricsRaw) as DailyMetric[]
-  const lookup = JSON.parse(lookupRaw) as LookupData
-  const availableDates = Array.from(scanDayAgg.keys()).sort()
-
+  const row = rows[0]
   return {
-    snapshotDefault: snapshotOnly.snapshotDefault,
-    snapshotDefaultTopN: snapshotOnly.snapshotDefaultTopN,
-    scanDayAgg,
-    buynowDayAgg,
-    dailyMetrics,
-    fourWeekLift: JSON.parse(fourWeekLiftRaw) as FourWeekLiftSummary,
-    quality: JSON.parse(qualityRaw) as QualityAudit,
-    lookup,
-    availableDates,
+    scans: toInt(row?.scans),
+    users: toInt(row?.users),
+    vins: toInt(row?.vins),
   }
 }
 
-async function getFullData(): Promise<LoadedData> {
-  if (!fullCachePromise) {
-    fullCachePromise = loadFullData()
+async function loadCounterMap(start: string, end: string, kind: "tools" | "zip5" | "buy_from"): Promise<Map<string, number>> {
+  if (kind === "tools") {
+    const rows = await dbQuery<{ key: string; value: string }>(
+      `
+        SELECT tool_name AS key, COUNT(*)::bigint AS value
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+          AND tool_name <> ''
+          AND tool_name <> 'UNMAPPED'
+        GROUP BY tool_name
+      `,
+      [start, end]
+    )
+    return new Map(rows.map((row) => [row.key, toInt(row.value)]))
   }
-  return fullCachePromise
-}
-
-function getRangeCacheKey(start: string, end: string, topN: number): string {
-  return `${start}|${end}|${topN}`
-}
-
-function getCachedRangeResponse(key: string): DashboardResponse | null {
-  const hit = rangeResponseCache.get(key)
-  if (!hit) return null
-  // refresh recency for simple LRU behavior
-  rangeResponseCache.delete(key)
-  rangeResponseCache.set(key, hit)
-  return hit
-}
-
-function setCachedRangeResponse(key: string, payload: DashboardResponse): void {
-  if (rangeResponseCache.has(key)) {
-    rangeResponseCache.delete(key)
+  if (kind === "zip5") {
+    const rows = await dbQuery<{ key: string; value: string }>(
+      `
+        SELECT zip5 AS key, COUNT(*)::bigint AS value
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+          AND zip5 <> ''
+        GROUP BY zip5
+      `,
+      [start, end]
+    )
+    return new Map(rows.map((row) => [row.key, toInt(row.value)]))
   }
-  rangeResponseCache.set(key, payload)
-  while (rangeResponseCache.size > RANGE_RESPONSE_CACHE_LIMIT) {
-    const oldestKey = rangeResponseCache.keys().next().value
-    if (!oldestKey) break
-    rangeResponseCache.delete(oldestKey)
+  const rows = await dbQuery<{ key: string; value: string }>(
+    `
+      SELECT buy_from AS key, COUNT(*)::bigint AS value
+      FROM rs2_buynow_click
+      WHERE date_utc BETWEEN $1::date AND $2::date
+        AND buy_from <> ''
+      GROUP BY buy_from
+    `,
+    [start, end]
+  )
+  return new Map(rows.map((row) => [row.key, toInt(row.value)]))
+}
+
+async function loadFourWeekLift(): Promise<FourWeekLiftSummary> {
+  const maxDateRows = await dbQuery<{ max_date: string | null }>(
+    "SELECT MAX(date_utc)::text AS max_date FROM rs2_scan"
+  )
+  const maxDate = maxDateRows[0]?.max_date
+  if (!maxDate) {
+    return { status: "empty" }
   }
-}
 
-function warmFullDataInBackground(): void {
-  if (fullWarmStarted) return
-  fullWarmStarted = true
-  void getFullData()
-    .then(() => {
-      if (commonRangesWarmStarted) return
-      commonRangesWarmStarted = true
-      const commonRanges = [
-        { start: shiftDate(DEFAULT_END, -6), end: DEFAULT_END }, // 7D
-        { start: shiftDate(DEFAULT_END, -13), end: DEFAULT_END }, // 14D
-        { start: shiftDate(DEFAULT_END, -27), end: DEFAULT_END }, // 28D
-        { start: "2026-01-01", end: "2026-01-31" }, // Jan month
-        { start: "2026-02-01", end: "2026-02-28" }, // Feb month
-      ]
-      for (const range of commonRanges) {
-        const key = getRangeCacheKey(range.start, range.end, 100)
-        if (rangeResponseCache.has(key)) continue
-        void buildRs2DashboardResponse({ start: range.start, end: range.end, topN: 100 }).catch(() => {
-          // Keep warming best-effort; ignore individual failures.
-        })
-      }
-    })
-    .catch(() => {
-      // Allow retry on next request if warmup fails.
-      fullWarmStarted = false
-    })
-}
+  const recentEnd = maxDate
+  const recentStart = shiftDate(recentEnd, -27)
+  const priorEnd = shiftDate(recentStart, -1)
+  const priorStart = shiftDate(priorEnd, -27)
 
-function takeRanked(counter: Map<string, number>, topN: number): RankedItem[] {
-  const values: RankedItem[] = []
-  for (const [key, inspections] of counter.entries()) {
-    values.push({ key, inspections })
-  }
-  values.sort((a, b) => (b.inspections === a.inspections ? a.key.localeCompare(b.key) : b.inspections - a.inspections))
-  return values.slice(0, topN)
-}
+  const [recent, prior, recentTools, priorTools, recentZip5, priorZip5, recentBuyFrom, priorBuyFrom] = await Promise.all([
+    loadWindowSummary(recentStart, recentEnd),
+    loadWindowSummary(priorStart, priorEnd),
+    loadCounterMap(recentStart, recentEnd, "tools"),
+    loadCounterMap(priorStart, priorEnd, "tools"),
+    loadCounterMap(recentStart, recentEnd, "zip5"),
+    loadCounterMap(priorStart, priorEnd, "zip5"),
+    loadCounterMap(recentStart, recentEnd, "buy_from"),
+    loadCounterMap(priorStart, priorEnd, "buy_from"),
+  ])
 
-function buildPercentileMap(counter: Map<string, number>): Map<string, number> {
-  const entries = Array.from(counter.entries()).sort((a, b) => a[1] - b[1])
-  const out = new Map<string, number>()
-  if (entries.length === 0) return out
-  if (entries.length === 1) {
-    out.set(entries[0][0], 100)
-    return out
-  }
-  for (let i = 0; i < entries.length; i += 1) {
-    out.set(entries[i][0], Math.round((i / (entries.length - 1)) * 100))
-  }
-  return out
-}
-
-function filterDaily(metrics: DailyMetric[], start: string, end: string): DailyMetric[] {
-  return metrics.filter((item) => item.date_pt >= start && item.date_pt <= end)
-}
-
-function sumDailyScans(metrics: DailyMetric[], start: string, end: string): number {
-  let scans = 0
-  for (const item of metrics) {
-    if (item.date_pt < start || item.date_pt > end) continue
-    scans += item.scans
-  }
-  return scans
-}
-
-function stableHash(text: string): number {
-  let hash = 2166136261
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i)
-    hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24)
-  }
-  return Math.abs(hash >>> 0)
-}
-
-function addCount(target: Map<string, number>, key: string, value: number): void {
-  target.set(key, (target.get(key) ?? 0) + value)
-}
-
-function sliceSnapshot(snapshot: DashboardResponse, topN: number): DashboardResponse {
+  const lift = prior.scans > 0 ? ((recent.scans - prior.scans) / prior.scans) * 100 : null
   return {
-    ...snapshot,
-    meta: {
-      ...snapshot.meta,
-      topN,
+    status: "ok",
+    windows: {
+      recent: { start: recentStart, end: recentEnd },
+      prior: { start: priorStart, end: priorEnd },
     },
-    topUsers: snapshot.topUsers.slice(0, topN),
-    topTools: snapshot.topTools.slice(0, topN),
-    topVins: snapshot.topVins.slice(0, topN),
-    topAccountVins: snapshot.topAccountVins.slice(0, topN),
-    topZipPostal: snapshot.topZipPostal.slice(0, topN),
-    ltlRetailers: snapshot.ltlRetailers.slice(0, topN),
-    ltlClickedAccounts: snapshot.ltlClickedAccounts.slice(0, topN),
+    summary: {
+      recent_scans: recent.scans,
+      prior_scans: prior.scans,
+      scan_delta: recent.scans - prior.scans,
+      scan_lift_pct: lift,
+      recent_unique_users: recent.users,
+      prior_unique_users: prior.users,
+      recent_unique_vins: recent.vins,
+      prior_unique_vins: prior.vins,
+    },
+    drivers: {
+      tools: topDelta(recentTools, priorTools),
+      zip5: topDelta(recentZip5, priorZip5),
+      buy_from: topDelta(recentBuyFrom, priorBuyFrom),
+    },
   }
 }
 
 export async function buildRs2DashboardResponse(params: DashboardParams): Promise<DashboardResponse> {
   const topN = clampTopN(params.topN)
-  const start = normalizeDateParam(params.start, DEFAULT_START)
-  const end = normalizeDateParam(params.end, DEFAULT_END)
-  const rangeKey = getRangeCacheKey(start, end, topN)
-  const cached = getCachedRangeResponse(rangeKey)
-  if (cached) {
-    return cached
-  }
-  const snapshotOnly = await getSnapshotOnlyData()
-
-  if (
-    snapshotOnly.snapshotDefault &&
-    start === DEFAULT_START &&
-    end === DEFAULT_END &&
-    topN <= snapshotOnly.snapshotDefaultTopN &&
-    (snapshotOnly.snapshotDefault.zipHeatPoints?.length ?? 0) > 0
-  ) {
-    const sliced = sliceSnapshot(snapshotOnly.snapshotDefault, topN)
-    setCachedRangeResponse(rangeKey, sliced)
-    warmFullDataInBackground()
-    return sliced
-  }
-  const data = await getFullData()
-
-  const usersCounter = new Map<string, number>()
-  const userEmailCounter = new Map<string, number>()
-  const userMaxDay = new Map<string, number>()
-  const toolInspectionCounter = new Map<string, number>()
-  const toolAbsCounter = new Map<string, number>()
-  const toolSrsCounter = new Map<string, number>()
-  const toolCelCounter = new Map<string, number>()
-  const vinsCounter = new Map<string, number>()
-  const accountVinsCounter = new Map<string, number>()
-  const zipCounter = new Map<string, number>()
-  const zip5Counter = new Map<string, number>()
-  let scans = 0
-
-  for (const [datePt, slot] of data.scanDayAgg.entries()) {
-    if (datePt < start || datePt > end) continue
-    scans += slot.scans
-
-    for (const [user, count] of slot.users.entries()) {
-      addCount(usersCounter, user, count)
-      const prev = userMaxDay.get(user) ?? 0
-      if (count > prev) {
-        userMaxDay.set(user, count)
-      }
-    }
-    for (const [pair, count] of slot.user_emails.entries()) {
-      addCount(userEmailCounter, pair, count)
-    }
-    for (const [tool, stat] of slot.tool_stats.entries()) {
-      addCount(toolInspectionCounter, tool, stat.inspections)
-      addCount(toolAbsCounter, tool, stat.abs_parts)
-      addCount(toolSrsCounter, tool, stat.srs_parts)
-      addCount(toolCelCounter, tool, stat.cel_parts)
-    }
-    for (const [vin, count] of slot.vins.entries()) addCount(vinsCounter, vin, count)
-    for (const [key, count] of slot.account_vins.entries()) addCount(accountVinsCounter, key, count)
-    for (const [zipPostal, count] of slot.zip_postal.entries()) addCount(zipCounter, zipPostal, count)
-    for (const [zip5, count] of slot.zip5.entries()) addCount(zip5Counter, zip5, count)
-  }
-
-  const ltlRetailerReports = new Map<string, Set<string>>()
-  const ltlRetailerClicks = new Map<string, number>()
-  const ltlAccountReports = new Map<string, Set<string>>()
-  const ltlAccountClicks = new Map<string, number>()
-  const ltlAccountEmailCounter = new Map<string, number>()
-
-  for (const [datePt, slot] of data.buynowDayAgg.entries()) {
-    if (datePt < start || datePt > end) continue
-    for (const [group, value] of slot.buy_from.entries()) {
-      const existing = ltlRetailerReports.get(group) ?? new Set<string>()
-      for (const reportId of value.reports) existing.add(reportId)
-      ltlRetailerReports.set(group, existing)
-      addCount(ltlRetailerClicks, group, value.clicks)
-    }
-    for (const [account, value] of slot.clicked_account.entries()) {
-      const existing = ltlAccountReports.get(account) ?? new Set<string>()
-      for (const reportId of value.reports) existing.add(reportId)
-      ltlAccountReports.set(account, existing)
-      addCount(ltlAccountClicks, account, value.clicks)
-      for (const [email, count] of value.emails) {
-        addCount(ltlAccountEmailCounter, `${account}|||${email}`, Number(count))
-      }
-    }
-  }
-
-  const primaryUserEmail = new Map<string, string>()
-  for (const [user, inspections] of usersCounter.entries()) {
-    let bestEmail = data.lookup.user_lookup[user] ?? ""
-    let bestCount = -1
-    for (const [pair, count] of userEmailCounter.entries()) {
-      const [pairUser, email] = pair.split("|||")
-      if (pairUser !== user) continue
-      if (count > bestCount) {
-        bestCount = count
-        bestEmail = email ?? ""
-      }
-    }
-    if (!bestEmail && inspections > 0) {
-      bestEmail = data.lookup.user_lookup[user] ?? ""
-    }
-    primaryUserEmail.set(user, bestEmail)
-  }
-
-  const primaryClickedEmail = new Map<string, string>()
-  for (const [account] of ltlAccountReports.entries()) {
-    let email = data.lookup.clicked_account_email_lookup[account] ?? ""
-    let bestCount = -1
-    for (const [pair, count] of ltlAccountEmailCounter.entries()) {
-      const [pairAccount, pairEmail] = pair.split("|||")
-      if (pairAccount !== account) continue
-      if (count > bestCount) {
-        bestCount = count
-        email = pairEmail ?? ""
-      }
-    }
-    primaryClickedEmail.set(account, email)
-  }
-
+  const normalizedStart = normalizeDateParam(params.start, DEFAULT_START)
+  const normalizedEnd = normalizeDateParam(params.end, DEFAULT_END)
+  const start = normalizedStart <= normalizedEnd ? normalizedStart : normalizedEnd
+  const end = normalizedStart <= normalizedEnd ? normalizedEnd : normalizedStart
   const priorRange = makePriorRange(start, end)
-  const priorScans = sumDailyScans(data.dailyMetrics, priorRange.start, priorRange.end)
+
+  const [
+    availableRow,
+    overviewRow,
+    priorRow,
+    dailyTrendRows,
+    topUsersRows,
+    topToolsRows,
+    topVinsRows,
+    topAccountVinsRows,
+    topZipPostalRows,
+    heatRows,
+    zip5TotalRow,
+    ltlRetailersRows,
+    ltlClickedRows,
+    qualityRow,
+    unmappedRows,
+    fourWeekLift,
+  ] = await Promise.all([
+    dbQuery<{ available_start: string | null; available_end: string | null }>(
+      `
+        SELECT
+          MIN(date_utc)::text AS available_start,
+          MAX(date_utc)::text AS available_end
+        FROM rs2_scan
+      `
+    ),
+    dbQuery<{ scans: string; unique_users: string; unique_vins: string }>(
+      `
+        SELECT
+          COUNT(*)::bigint AS scans,
+          COUNT(DISTINCT NULLIF(user_id, ''))::bigint AS unique_users,
+          COUNT(DISTINCT NULLIF(vin_final, ''))::bigint AS unique_vins
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+      `,
+      [start, end]
+    ),
+    dbQuery<{ scans: string }>(
+      `
+        SELECT COUNT(*)::bigint AS scans
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+      `,
+      [priorRange.start, priorRange.end]
+    ),
+    dbQuery<{ date_pt: string; scans: string; unique_users: string; unique_vins: string }>(
+      `
+        SELECT
+          date_utc::text AS date_pt,
+          COUNT(*)::bigint AS scans,
+          COUNT(DISTINCT NULLIF(user_id, ''))::bigint AS unique_users,
+          COUNT(DISTINCT NULLIF(vin_final, ''))::bigint AS unique_vins
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+        GROUP BY date_utc
+        ORDER BY date_utc
+      `,
+      [start, end]
+    ),
+    dbQuery<{ user_id: string; user_email: string; same_day_reports: string; inspections: string }>(
+      `
+        WITH scoped AS (
+          SELECT user_id, email, date_utc
+          FROM rs2_scan
+          WHERE date_utc BETWEEN $1::date AND $2::date
+        ),
+        user_counts AS (
+          SELECT user_id, COUNT(*)::bigint AS inspections
+          FROM scoped
+          WHERE user_id <> ''
+          GROUP BY user_id
+        ),
+        user_day AS (
+          SELECT user_id, date_utc, COUNT(*)::bigint AS day_count
+          FROM scoped
+          WHERE user_id <> ''
+          GROUP BY user_id, date_utc
+        ),
+        user_day_max AS (
+          SELECT user_id, MAX(day_count)::bigint AS same_day_reports
+          FROM user_day
+          GROUP BY user_id
+        ),
+        user_email_rank AS (
+          SELECT
+            user_id,
+            email,
+            COUNT(*)::bigint AS email_count,
+            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY COUNT(*) DESC, email) AS rn
+          FROM scoped
+          WHERE user_id <> '' AND email <> ''
+          GROUP BY user_id, email
+        )
+        SELECT
+          uc.user_id,
+          COALESCE(uer.email, '') AS user_email,
+          COALESCE(udm.same_day_reports, 0)::bigint AS same_day_reports,
+          uc.inspections
+        FROM user_counts uc
+        LEFT JOIN user_day_max udm ON udm.user_id = uc.user_id
+        LEFT JOIN user_email_rank uer ON uer.user_id = uc.user_id AND uer.rn = 1
+        ORDER BY uc.inspections DESC, uc.user_id
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{ tool_name: string; inspections: string; abs_parts: string; srs_parts: string; cel_parts: string }>(
+      `
+        SELECT
+          s.tool_name,
+          COUNT(*)::bigint AS inspections,
+          SUM(COALESCE(p.abs_parts, 0))::bigint AS abs_parts,
+          SUM(COALESCE(p.srs_parts, 0))::bigint AS srs_parts,
+          SUM(COALESCE(p.cel_parts, 0))::bigint AS cel_parts
+        FROM rs2_scan s
+        LEFT JOIN rs2_report_part_counts p ON p.report_id = s.report_id
+        WHERE s.date_utc BETWEEN $1::date AND $2::date
+          AND s.tool_name <> ''
+          AND s.tool_name <> 'UNMAPPED'
+        GROUP BY s.tool_name
+        ORDER BY inspections DESC, s.tool_name
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{ vin: string; vehicle_year: string; vehicle_make: string; vehicle_model: string; inspections: string }>(
+      `
+        WITH scoped AS (
+          SELECT vin_final, vehicle_year, vehicle_make, vehicle_model
+          FROM rs2_scan
+          WHERE date_utc BETWEEN $1::date AND $2::date
+            AND vin_final <> ''
+        ),
+        vin_counts AS (
+          SELECT vin_final AS vin, COUNT(*)::bigint AS inspections
+          FROM scoped
+          GROUP BY vin_final
+        ),
+        vin_meta AS (
+          SELECT
+            vin_final AS vin,
+            vehicle_year,
+            vehicle_make,
+            vehicle_model,
+            ROW_NUMBER() OVER (
+              PARTITION BY vin_final
+              ORDER BY COUNT(*) DESC, vehicle_year, vehicle_make, vehicle_model
+            ) AS rn
+          FROM scoped
+          GROUP BY vin_final, vehicle_year, vehicle_make, vehicle_model
+        )
+        SELECT
+          vc.vin,
+          COALESCE(vm.vehicle_year, '') AS vehicle_year,
+          COALESCE(vm.vehicle_make, '') AS vehicle_make,
+          COALESCE(vm.vehicle_model, '') AS vehicle_model,
+          vc.inspections
+        FROM vin_counts vc
+        LEFT JOIN vin_meta vm ON vm.vin = vc.vin AND vm.rn = 1
+        ORDER BY vc.inspections DESC, vc.vin
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{
+      account_id: string
+      user_email: string
+      vin: string
+      vehicle_year: string
+      vehicle_make: string
+      vehicle_model: string
+      inspections: string
+    }>(
+      `
+        WITH scoped AS (
+          SELECT account_id, vin_final, email, vehicle_year, vehicle_make, vehicle_model
+          FROM rs2_scan
+          WHERE date_utc BETWEEN $1::date AND $2::date
+            AND account_id <> ''
+            AND vin_final <> ''
+        ),
+        pair_counts AS (
+          SELECT account_id, vin_final, COUNT(*)::bigint AS inspections
+          FROM scoped
+          GROUP BY account_id, vin_final
+        ),
+        email_rank AS (
+          SELECT
+            account_id,
+            vin_final,
+            email,
+            ROW_NUMBER() OVER (
+              PARTITION BY account_id, vin_final
+              ORDER BY COUNT(*) DESC, email
+            ) AS rn
+          FROM scoped
+          WHERE email <> ''
+          GROUP BY account_id, vin_final, email
+        ),
+        meta_rank AS (
+          SELECT
+            account_id,
+            vin_final,
+            vehicle_year,
+            vehicle_make,
+            vehicle_model,
+            ROW_NUMBER() OVER (
+              PARTITION BY account_id, vin_final
+              ORDER BY COUNT(*) DESC, vehicle_year, vehicle_make, vehicle_model
+            ) AS rn
+          FROM scoped
+          GROUP BY account_id, vin_final, vehicle_year, vehicle_make, vehicle_model
+        )
+        SELECT
+          pc.account_id,
+          COALESCE(er.email, '') AS user_email,
+          pc.vin_final AS vin,
+          COALESCE(mr.vehicle_year, '') AS vehicle_year,
+          COALESCE(mr.vehicle_make, '') AS vehicle_make,
+          COALESCE(mr.vehicle_model, '') AS vehicle_model,
+          pc.inspections
+        FROM pair_counts pc
+        LEFT JOIN email_rank er ON er.account_id = pc.account_id AND er.vin_final = pc.vin_final AND er.rn = 1
+        LEFT JOIN meta_rank mr ON mr.account_id = pc.account_id AND mr.vin_final = pc.vin_final AND mr.rn = 1
+        ORDER BY pc.inspections DESC, pc.account_id, pc.vin_final
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{ zip_postal: string; city: string; state: string; zip5: string; inspections: string }>(
+      `
+        WITH scoped AS (
+          SELECT zip_postal, zip5, city, state
+          FROM rs2_scan
+          WHERE date_utc BETWEEN $1::date AND $2::date
+            AND zip_postal <> ''
+        ),
+        zip_counts AS (
+          SELECT zip_postal, COUNT(*)::bigint AS inspections
+          FROM scoped
+          GROUP BY zip_postal
+        ),
+        zip_meta AS (
+          SELECT
+            zip_postal,
+            zip5,
+            city,
+            state,
+            ROW_NUMBER() OVER (
+              PARTITION BY zip_postal
+              ORDER BY COUNT(*) DESC, zip5, city, state
+            ) AS rn
+          FROM scoped
+          GROUP BY zip_postal, zip5, city, state
+        )
+        SELECT
+          zc.zip_postal,
+          COALESCE(NULLIF(zm.city, ''), zl.city, '') AS city,
+          COALESCE(NULLIF(zm.state, ''), zl.state, '') AS state,
+          COALESCE(zm.zip5, '') AS zip5,
+          zc.inspections
+        FROM zip_counts zc
+        LEFT JOIN zip_meta zm ON zm.zip_postal = zc.zip_postal AND zm.rn = 1
+        LEFT JOIN rs2_zip_lookup zl ON zl.zip5 = zm.zip5
+        ORDER BY zc.inspections DESC, zc.zip_postal
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{ zip_postal: string; zip5: string; city: string; state: string; lat: string; lng: string; scans: string }>(
+      `
+        WITH scoped AS (
+          SELECT zip_postal, zip5, city, state
+          FROM rs2_scan
+          WHERE date_utc BETWEEN $1::date AND $2::date
+            AND zip5 <> ''
+        ),
+        zip_counts AS (
+          SELECT zip_postal, zip5, COUNT(*)::bigint AS scans
+          FROM scoped
+          GROUP BY zip_postal, zip5
+        ),
+        zip_meta AS (
+          SELECT
+            zip_postal,
+            zip5,
+            city,
+            state,
+            ROW_NUMBER() OVER (
+              PARTITION BY zip_postal
+              ORDER BY COUNT(*) DESC, zip5, city, state
+            ) AS rn
+          FROM scoped
+          GROUP BY zip_postal, zip5, city, state
+        )
+        SELECT
+          zc.zip_postal,
+          zc.zip5,
+          COALESCE(NULLIF(zm.city, ''), zl.city, '') AS city,
+          COALESCE(NULLIF(zm.state, ''), zl.state, '') AS state,
+          zl.lat::text AS lat,
+          zl.lng::text AS lng,
+          zc.scans
+        FROM zip_counts zc
+        LEFT JOIN zip_meta zm ON zm.zip_postal = zc.zip_postal AND zm.rn = 1
+        LEFT JOIN rs2_zip_lookup zl ON zl.zip5 = zc.zip5
+        WHERE zl.lat IS NOT NULL AND zl.lng IS NOT NULL
+        ORDER BY zc.scans DESC, zc.zip_postal
+        LIMIT $3
+      `,
+      [start, end, MAX_HEAT_POINTS + 500]
+    ),
+    dbQuery<{ points_total_zip5: string }>(
+      `
+        SELECT COUNT(DISTINCT zip5)::bigint AS points_total_zip5
+        FROM rs2_scan
+        WHERE date_utc BETWEEN $1::date AND $2::date
+          AND zip5 <> ''
+      `,
+      [start, end]
+    ),
+    dbQuery<{ buy_from: string; inspections: string; total_buy_clicks: string }>(
+      `
+        SELECT
+          buy_from,
+          COUNT(DISTINCT report_id)::bigint AS inspections,
+          COUNT(*)::bigint AS total_buy_clicks
+        FROM rs2_buynow_click
+        WHERE date_utc BETWEEN $1::date AND $2::date
+          AND buy_from <> ''
+        GROUP BY buy_from
+        ORDER BY inspections DESC, buy_from
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{ account_id: string; user_email: string; inspections: string; total_buy_clicks: string }>(
+      `
+        WITH scoped AS (
+          SELECT report_id, clicked_account_id, email
+          FROM rs2_buynow_click
+          WHERE date_utc BETWEEN $1::date AND $2::date
+            AND clicked_account_id <> ''
+        ),
+        account_counts AS (
+          SELECT
+            clicked_account_id AS account_id,
+            COUNT(DISTINCT report_id)::bigint AS inspections,
+            COUNT(*)::bigint AS total_buy_clicks
+          FROM scoped
+          GROUP BY clicked_account_id
+        ),
+        email_rank AS (
+          SELECT
+            clicked_account_id AS account_id,
+            email,
+            ROW_NUMBER() OVER (
+              PARTITION BY clicked_account_id
+              ORDER BY COUNT(*) DESC, email
+            ) AS rn
+          FROM scoped
+          WHERE email <> ''
+          GROUP BY clicked_account_id, email
+        )
+        SELECT
+          ac.account_id,
+          COALESCE(er.email, '') AS user_email,
+          ac.inspections,
+          ac.total_buy_clicks
+        FROM account_counts ac
+        LEFT JOIN email_rank er ON er.account_id = ac.account_id AND er.rn = 1
+        ORDER BY ac.inspections DESC, ac.account_id
+        LIMIT $3
+      `,
+      [start, end, topN]
+    ),
+    dbQuery<{ generated_at_utc: string; mapping_fallback_usb937: string | null; ambiguous_mapping_keys: string }>(
+      `
+        SELECT
+          generated_at_utc::text AS generated_at_utc,
+          mapping_fallback_usb937,
+          ambiguous_mapping_keys::text AS ambiguous_mapping_keys
+        FROM rs2_quality
+        ORDER BY id DESC
+        LIMIT 1
+      `
+    ),
+    dbQuery<{ usb_product_id: string; rows: string }>(
+      `
+        SELECT
+          COALESCE(usb_product_id, '') AS usb_product_id,
+          COUNT(*)::bigint AS rows
+        FROM rs2_scan
+        WHERE tool_name = 'UNMAPPED'
+        GROUP BY usb_product_id
+        ORDER BY rows DESC, usb_product_id
+        LIMIT 20
+      `
+    ),
+    loadFourWeekLift(),
+  ])
+
+  const available = availableRow[0]
+  const overview = overviewRow[0]
+  const priorScans = toInt(priorRow[0]?.scans)
   const hasPriorData = priorScans > 0
-  const scanLiftPctVsPrior = hasPriorData ? ((scans - priorScans) / priorScans) * 100 : null
+  const scans = toInt(overview?.scans)
+  const scanLift = hasPriorData ? ((scans - priorScans) / priorScans) * 100 : null
 
-  const topUsers = takeRanked(usersCounter, topN).map((item) => ({
-    user_id: item.key,
-    user_email: primaryUserEmail.get(item.key) ?? "",
-    same_day_reports: userMaxDay.get(item.key) ?? 0,
-    inspections: item.inspections,
+  const heatBase = heatRows.map((row) => ({
+    key: `${row.zip_postal}|${row.zip5}`,
+    zip_postal: row.zip_postal,
+    zip5: row.zip5,
+    city: row.city || "",
+    state: row.state || "",
+    lat: toFloat(row.lat),
+    lng: toFloat(row.lng),
+    scans: toInt(row.scans),
+  }))
+  const heatPercentiles = buildPercentileMap(heatBase.map((row) => ({ key: row.key, value: row.scans })))
+  const truncated = heatBase.length > MAX_HEAT_POINTS
+  const zipHeatPoints = (truncated ? heatBase.slice(0, MAX_HEAT_POINTS) : heatBase).map((row) => ({
+    zip_postal: row.zip_postal,
+    zip5: row.zip5,
+    city: row.city,
+    state: row.state,
+    lat: row.lat,
+    lng: row.lng,
+    scans: row.scans,
+    percentile: heatPercentiles.get(row.key) ?? 0,
   }))
 
-  const mappedToolCounter = new Map(
-    Array.from(toolInspectionCounter.entries()).filter(([toolName]) => Boolean(toolName) && toolName !== "UNMAPPED")
-  )
-  const topTools = takeRanked(mappedToolCounter, topN).map((item) => ({
-    tool_name: item.key,
-    inspections: item.inspections,
-    abs_parts: toolAbsCounter.get(item.key) ?? 0,
-    srs_parts: toolSrsCounter.get(item.key) ?? 0,
-    cel_parts: toolCelCounter.get(item.key) ?? 0,
-  }))
+  const quality = qualityRow[0]
+  const generatedAt = quality?.generated_at_utc ?? new Date().toISOString()
 
-  const topVins = takeRanked(vinsCounter, topN).map((item) => {
-    const meta = data.lookup.vin_lookup[item.key] ?? { year: "", make: "", model: "", engine: "" }
-    return {
-      vin: item.key,
-      vehicle_year: meta.year ?? "",
-      vehicle_make: meta.make ?? "",
-      vehicle_model: meta.model ?? "",
-      vehicle_engine: meta.engine ?? "",
-      inspections: item.inspections,
-    }
-  })
-
-  const topAccountVins = takeRanked(accountVinsCounter, topN).map((item) => {
-    const [account_id, vin] = item.key.split("|||")
-    const meta =
-      data.lookup.account_vin_lookup[item.key] ?? {
-        email: data.lookup.user_lookup[account_id] ?? "",
-        year: "",
-        make: "",
-        model: "",
-        engine: "",
-      }
-    return {
-      account_id: account_id ?? "",
-      user_email: meta.email ?? "",
-      vin: vin ?? "",
-      vehicle_year: meta.year ?? "",
-      vehicle_make: meta.make ?? "",
-      vehicle_model: meta.model ?? "",
-      vehicle_engine: meta.engine ?? "",
-      inspections: item.inspections,
-    }
-  })
-
-  const topZipPostal = takeRanked(zipCounter, topN).map((item) => {
-    const meta = data.lookup.zip_lookup[item.key] ?? { city: "", state: "", zip5: "" }
-    return {
-      zip_postal: item.key,
-      city: meta.city ?? "",
-      state: meta.state ?? "",
-      zip5: meta.zip5 ?? "",
-      inspections: item.inspections,
-    }
-  })
-
-  const ltlRetailers = takeRanked(
-    new Map(Array.from(ltlRetailerReports.entries()).map(([key, set]) => [key, set.size])),
-    topN
-  ).map((item) => ({
-    buy_from: item.key,
-    inspections: item.inspections,
-    total_buy_clicks: ltlRetailerClicks.get(item.key) ?? 0,
-  }))
-
-  const ltlClickedAccounts = takeRanked(
-    new Map(Array.from(ltlAccountReports.entries()).map(([key, set]) => [key, set.size])),
-    topN
-  ).map((item) => ({
-    account_id: item.key,
-    user_email: primaryClickedEmail.get(item.key) ?? "",
-    inspections: item.inspections,
-    total_buy_clicks: ltlAccountClicks.get(item.key) ?? 0,
-  }))
-
-  const percentileMap = buildPercentileMap(zipCounter)
-  const heatPoints: HeatPoint[] = []
-  for (const [zipPostal, count] of zipCounter.entries()) {
-    const info = data.lookup.zip_lookup[zipPostal]
-    if (!info) continue
-    const state = info.state?.toUpperCase() ?? ""
-    let lat = Number.parseFloat(info.lat ?? "")
-    let lng = Number.parseFloat(info.lng ?? "")
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      const centroid = STATE_CENTROIDS[state]
-      if (!centroid) continue
-      const hash = stableHash(zipPostal)
-      const offsetLat = ((hash % 2001) - 1000) / 2500
-      const offsetLng = ((Math.floor(hash / 2001) % 2001) - 1000) / 2500
-      lat = centroid.lat + offsetLat
-      lng = centroid.lng + offsetLng
-    }
-    const zip5 = info.zip5 || zipPostal
-    heatPoints.push({
-      zip_postal: zipPostal,
-      zip5,
-      city: info.city ?? "",
-      state,
-      lat,
-      lng,
-      scans: count,
-      percentile: percentileMap.get(zipPostal) ?? 0,
-    })
-  }
-  heatPoints.sort((a, b) => b.scans - a.scans || a.zip_postal.localeCompare(b.zip_postal))
-  const truncated = heatPoints.length > MAX_HEAT_POINTS
-  const zipHeatPoints = truncated ? heatPoints.slice(0, MAX_HEAT_POINTS) : heatPoints
-
-  const topUnmappedUsb = data.quality.row_counts?.scan_level?.top_unmapped_usb ?? []
-
-  const response: DashboardResponse = {
+  return {
     meta: {
       start,
       end,
       topN,
-      available_start: data.availableDates[0] ?? start,
-      available_end: data.availableDates[data.availableDates.length - 1] ?? end,
+      available_start: available?.available_start ?? start,
+      available_end: available?.available_end ?? end,
       prior_equal_range: priorRange,
       has_prior_data: hasPriorData,
     },
     overview: {
       scans,
-      unique_users: usersCounter.size,
-      unique_vins: vinsCounter.size,
+      unique_users: toInt(overview?.unique_users),
+      unique_vins: toInt(overview?.unique_vins),
       prior_scans: hasPriorData ? priorScans : null,
-      scan_lift_pct_vs_prior: scanLiftPctVsPrior,
+      scan_lift_pct_vs_prior: scanLift,
     },
-    dailyTrend: filterDaily(data.dailyMetrics, start, end),
-    topUsers,
-    topTools,
-    topVins,
-    topAccountVins,
-    topZipPostal,
-    ltlRetailers,
-    ltlClickedAccounts,
+    dailyTrend: dailyTrendRows.map((row) => ({
+      date_pt: row.date_pt,
+      scans: toInt(row.scans),
+      unique_users: toInt(row.unique_users),
+      unique_vins: toInt(row.unique_vins),
+    })),
+    topUsers: topUsersRows.map((row) => ({
+      user_id: row.user_id,
+      user_email: row.user_email,
+      same_day_reports: toInt(row.same_day_reports),
+      inspections: toInt(row.inspections),
+    })),
+    topTools: topToolsRows.map((row) => ({
+      tool_name: row.tool_name,
+      inspections: toInt(row.inspections),
+      abs_parts: toInt(row.abs_parts),
+      srs_parts: toInt(row.srs_parts),
+      cel_parts: toInt(row.cel_parts),
+    })),
+    topVins: topVinsRows.map((row) => ({
+      vin: row.vin,
+      vehicle_year: row.vehicle_year,
+      vehicle_make: row.vehicle_make,
+      vehicle_model: row.vehicle_model,
+      vehicle_engine: "",
+      inspections: toInt(row.inspections),
+    })),
+    topAccountVins: topAccountVinsRows.map((row) => ({
+      account_id: row.account_id,
+      user_email: row.user_email,
+      vin: row.vin,
+      vehicle_year: row.vehicle_year,
+      vehicle_make: row.vehicle_make,
+      vehicle_model: row.vehicle_model,
+      vehicle_engine: "",
+      inspections: toInt(row.inspections),
+    })),
+    topZipPostal: topZipPostalRows.map((row) => ({
+      zip_postal: row.zip_postal,
+      city: row.city || "",
+      state: row.state || "",
+      zip5: row.zip5 || "",
+      inspections: toInt(row.inspections),
+    })),
+    ltlRetailers: ltlRetailersRows.map((row) => ({
+      buy_from: row.buy_from,
+      inspections: toInt(row.inspections),
+      total_buy_clicks: toInt(row.total_buy_clicks),
+    })),
+    ltlClickedAccounts: ltlClickedRows.map((row) => ({
+      account_id: row.account_id,
+      user_email: row.user_email,
+      inspections: toInt(row.inspections),
+      total_buy_clicks: toInt(row.total_buy_clicks),
+    })),
     zipHeatPoints,
     zipHeatMeta: {
-      points_with_centroid: heatPoints.length,
-      points_total_zip5: zipCounter.size,
+      points_with_centroid: heatBase.length,
+      points_total_zip5: toInt(zip5TotalRow[0]?.points_total_zip5),
       truncated,
-      missing_centroid_lookup: heatPoints.length === 0,
+      missing_centroid_lookup: heatBase.length === 0,
     },
-    fourWeekLift: data.fourWeekLift,
+    fourWeekLift,
     dataGaps: [
       {
         question: "Vehicle Care section usage instances last month",
@@ -837,17 +857,15 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
       },
     ],
     quality: {
-      generated_at_utc: data.quality.generated_at_utc,
-      mapping_fallback_usb937: data.lookup.mapping_fallback_usb937,
-      ambiguous_mapping_keys: data.lookup.ambiguous_mapping_keys,
-      top_unmapped_usb: topUnmappedUsb.map(([usbProductId, rows]) => ({
-        usb_product_id: String(usbProductId),
-        rows: Number(rows),
+      generated_at_utc: generatedAt,
+      mapping_fallback_usb937: quality?.mapping_fallback_usb937 ?? null,
+      ambiguous_mapping_keys: toInt(quality?.ambiguous_mapping_keys),
+      top_unmapped_usb: unmappedRows.map((row) => ({
+        usb_product_id: row.usb_product_id,
+        rows: toInt(row.rows),
       })),
     },
   }
-  setCachedRangeResponse(rangeKey, response)
-  return response
 }
 
 export function getNormalizedParams(searchParams: URLSearchParams): DashboardParams {
