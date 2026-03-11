@@ -1234,10 +1234,10 @@ def main() -> None:
     project_root = Path(__file__).resolve().parents[1]
     workspace_root = project_root.parent
     raw_dir = args.raw_dir or workspace_root / "raw_data" / "202602"
-    mapping_xlsx = args.mapping_xlsx or workspace_root / "RS2tool_mapping" / "RS2_Tool_05122025_01.xlsx"
+    mapping_xlsx = args.mapping_xlsx or workspace_root / "raw_data" / "RS2tool_mapping" / "RS2_Tool_05122025_01.xlsx"
     output_dir = args.output_dir or project_root / "data" / "rs2"
     geo_output_csv = project_root / "data" / "geo" / "us_zip_centroids.csv"
-    workspace_geo_source = workspace_root / "zipmap.csv"
+    workspace_geo_source = workspace_root / "raw_data" / "zipmap.csv"
     ensure_geo_placeholder(geo_output_csv)
     if args.geo_csv is not None:
         geo_source_csv = args.geo_csv
@@ -1250,8 +1250,7 @@ def main() -> None:
         geo_source_csv = geo_output_csv
     tz = ZoneInfo(args.timezone)
 
-    # Use 4-week scan extract as primary inspection source to cover 2026-01-01..2026-02-28.
-    scan_csv = raw_dir / "4-week lift scan.csv"
+    scan_csv = raw_dir / "scan-level raw extract.csv"
     fix_csv = raw_dir / "fix-part raw extract.csv"
     buynow_csv = raw_dir / "BuyNow raw extract.csv"
 

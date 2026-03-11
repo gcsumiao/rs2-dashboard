@@ -12,6 +12,12 @@ Interactive RS2 inspection dashboard backed by local PostgreSQL 18 in Docker.
 
 Snapshot JSON fast-path is removed from dashboard API logic. The API now queries PostgreSQL directly.
 
+Current loader logic:
+- Scan-level base comes from `YYYYMM/fix-part raw extract.csv` (deduped by `DiagnosticReportId`).
+- Part counts come from `FixType` rows in the same fix-part extracts.
+- BuyNow clicks come from each `YYYYMM/BuyNow raw extract.csv`.
+- Validation checks are read from `raw_data/data_validation/*ScanResults.csv`.
+
 ## Prerequisites
 
 - Docker Desktop
@@ -55,7 +61,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Daily Workflow
 
 - If raw data did not change: just run `npm run dev`.
-- If raw data changed: run `npm run db:load:rs2` then `npm run dev`.
+- If raw data changed (e.g. new `202601`/`202602` files): run `npm run db:load:rs2` then `npm run dev`.
 
 ## Commands
 
@@ -69,10 +75,10 @@ Open [http://localhost:3000](http://localhost:3000).
 Loader defaults:
 
 - raw root: `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data` (recursive search)
-- mapping: `/Users/sumiaoc/Desktop/RS2_dashboard/RS2tool_mapping/RS2_Tool_05122025_01.xlsx`
+- mapping: `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/RS2tool_mapping/RS2_Tool_05122025_01.xlsx`
 - geo source priority:
   1. `data/geo/us_zip_centroids.csv` (if already populated)
-  2. `/Users/sumiaoc/Desktop/RS2_dashboard/zipmap.csv`
+  2. `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/zipmap.csv`
 
 ## Data Rules Implemented
 
