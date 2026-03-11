@@ -41,7 +41,7 @@ class MonthBundle:
     month: str
     fix_csv: Path
     buynow_csv: Path
-    scan_csv: Path | None
+    scan_csv: Path
 
 
 def load_schema_sql(project_root: Path) -> str:
@@ -68,8 +68,10 @@ def discover_month_bundles(raw_root: Path) -> List[MonthBundle]:
             raise FileNotFoundError(f"Missing {fix_csv}")
         if not buynow_csv.exists():
             raise FileNotFoundError(f"Missing {buynow_csv}")
+        if not scan_csv.exists():
+            raise FileNotFoundError(f"Missing {scan_csv}")
 
-        bundles.append(MonthBundle(month=month, fix_csv=fix_csv, buynow_csv=buynow_csv, scan_csv=scan_csv if scan_csv.exists() else None))
+        bundles.append(MonthBundle(month=month, fix_csv=fix_csv, buynow_csv=buynow_csv, scan_csv=scan_csv))
 
     if not bundles:
         raise FileNotFoundError(f"No YYYYMM month folders found under {raw_root}")
@@ -149,14 +151,13 @@ def copy_zip_lookup(conn: psycopg.Connection, geo_lookup: Dict[str, Dict[str, ob
     return inserted
 
 
-def copy_scan_rows_from_fix_part(
+def copy_scan_rows_from_scan_level(
     conn: psycopg.Connection,
     bundles: Iterable[MonthBundle],
     mapping,
     geo_lookup: Dict[str, Dict[str, object]],
 ) -> int:
     inserted = 0
-    seen_report_ids: set[str] = set()
 
     with conn.cursor() as cur:
         with cur.copy(
@@ -169,11 +170,11 @@ def copy_scan_rows_from_fix_part(
             """
         ) as copy:
             for bundle in bundles:
-                with bundle.fix_csv.open(newline="", encoding="utf-8-sig") as fh:
+                with bundle.scan_csv.open(newline="", encoding="utf-8-sig") as fh:
                     reader = csv.DictReader(fh)
                     for row in reader:
                         report_id = normalize_nullable(row.get("DiagnosticReportId", ""))
-                        if not report_id or report_id in seen_report_ids:
+                        if not report_id:
                             continue
 
                         created = parse_datetime(row.get("CreatedDateTimeUTC", ""))
@@ -230,7 +231,6 @@ def copy_scan_rows_from_fix_part(
                             )
                         )
                         inserted += 1
-                        seen_report_ids.add(report_id)
     return inserted
 
 
@@ -377,7 +377,7 @@ def main() -> None:
 
     print(f"Using raw root: {raw_root}", flush=True)
     print(f"Using months: {[bundle.month for bundle in bundles]}", flush=True)
-    print("Using fix-part as scan-level source (dedup by DiagnosticReportId).", flush=True)
+    print("Using scan-level raw extract as inspection source.", flush=True)
     print(f"Using mapping: {mapping_xlsx}", flush=True)
     print(f"Using geo source: {geo_csv}", flush=True)
     if expected_validation:
@@ -409,7 +409,7 @@ def main() -> None:
         zip_rows = copy_zip_lookup(conn, geo_lookup)
         print(f"Loaded rs2_zip_lookup rows: {zip_rows}", flush=True)
 
-        scan_rows = copy_scan_rows_from_fix_part(conn, bundles, mapping, geo_lookup)
+        scan_rows = copy_scan_rows_from_scan_level(conn, bundles, mapping, geo_lookup)
         print(f"Loaded rs2_scan rows: {scan_rows}", flush=True)
 
         buynow_rows = copy_buynow_rows(conn, bundles)

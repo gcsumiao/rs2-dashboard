@@ -15,7 +15,7 @@ Snapshot JSON fast-path is removed from dashboard API logic. The API now queries
 Note: this project intentionally uses container port `5433` because this Mac already has a local PostgreSQL instance on `5432`.
 
 Current loader logic:
-- Scan-level base comes from `YYYYMM/fix-part raw extract.csv` (deduped by `DiagnosticReportId`).
+- Scan-level base comes from `YYYYMM/scan-level raw extract.csv`.
 - Part counts come from `FixType` rows in the same fix-part extracts.
 - BuyNow clicks come from each `YYYYMM/BuyNow raw extract.csv`.
 - Validation checks are read from `raw_data/data_validation/*ScanResults.csv`.
