@@ -7,7 +7,7 @@
     "build:rs2data": "python3 scripts/build_rs2_data.py --timezone UTC",
     "build:rs2data:force": "python3 scripts/build_rs2_data.py --timezone UTC --force",
     "db:up": "docker compose up -d postgres",
-    "db:down": "docker compose down",
+    "db:down": "docker compose down -v",
     "db:logs": "docker compose logs -f postgres",
     "db:load:rs2": "bash scripts/db_load_rs2.sh",
     "build": "next build",

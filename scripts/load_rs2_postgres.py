@@ -343,7 +343,7 @@ def run_validation_checks(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Load RS2 extracts into PostgreSQL")
-    parser.add_argument("--db-url", default="postgresql://rs2:rs2@localhost:5432/rs2_dashboard", help="PostgreSQL URL")
+    parser.add_argument("--db-url", default="postgresql://rs2:rs2@localhost:5432/rs2_dashboard?gssencmode=disable", help="PostgreSQL URL")
     parser.add_argument("--raw-root", type=Path, default=None, help="Root folder that contains raw RS2 extracts")
     parser.add_argument("--mapping-xlsx", type=Path, default=None, help="Path to RS2 tool mapping workbook")
     parser.add_argument("--geo-csv", type=Path, default=None, help="ZIP lookup CSV (zip/zip5 + city/state + lat/lng)")

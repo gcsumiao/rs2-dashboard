@@ -44,6 +44,8 @@ python3 -m pip install -r scripts/requirements-rs2-db.txt
 npm run db:up
 ```
 
+`db:load:rs2` will also auto-start postgres and bootstrap the `rs2` role / `rs2_dashboard` database if missing.
+
 4. Load RS2 raw files into PostgreSQL:
 
 ```bash
@@ -67,7 +69,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ## Commands
 
 - `npm run db:up`: start PostgreSQL container
-- `npm run db:down`: stop PostgreSQL container
+- `npm run db:down`: stop PostgreSQL container and remove volume
 - `npm run db:logs`: follow PostgreSQL logs
 - `npm run db:load:rs2`: truncate and reload RS2 tables from raw extracts
 

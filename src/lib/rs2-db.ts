@@ -1,6 +1,6 @@
 import { Pool, type QueryResultRow } from "pg"
 
-const DEFAULT_DB_URL = "postgresql://rs2:rs2@localhost:5432/rs2_dashboard"
+const DEFAULT_DB_URL = "postgresql://rs2:rs2@localhost:5432/rs2_dashboard?gssencmode=disable"
 
 declare global {
   // eslint-disable-next-line no-var

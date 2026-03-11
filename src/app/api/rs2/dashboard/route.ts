@@ -18,6 +18,8 @@ export async function GET(request: Request) {
       raw.includes("database") && raw.includes("does not exist")
     ) {
       message = "Database is not ready. Run `npm run db:up` then `npm run db:load:rs2`."
+    } else if (raw.includes("role") && raw.includes("does not exist")) {
+      message = "Database user is not initialized. Run `npm run db:load:rs2`."
     } else if (raw.includes("relation") && raw.includes("does not exist")) {
       message = "RS2 tables are not initialized. Run `npm run db:load:rs2`."
     }
