@@ -1,6 +1,6 @@
 import { dbQuery } from "@/lib/rs2-db"
 import { US_STATE_CODES, US_STATE_NAME_BY_CODE } from "@/lib/us-state-names"
-import { extractZip5, getZipGeoLookup } from "@/lib/zip-geo-lookup"
+import { extractZip5 } from "@/lib/zip-geo-lookup"
 
 type DateRange = { start: string; end: string; days: number }
 
@@ -659,7 +659,7 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
   }
 
   if (params.tab === "geo") {
-    const [topZipPostalRows, stateZipRows, zip5TotalRow, zipGeoLookup] = await Promise.all([
+    const [topZipPostalRows, stateZipRows, zip5TotalRow] = await Promise.all([
       dbQuery<{ zip_postal: string; city: string; state: string; zip5: string; inspections: string }>(
         `
           WITH scoped AS (
@@ -710,17 +710,24 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
         `,
         [start, end, topN]
       ),
-      dbQuery<{ state: string; zip5: string; inspections: string }>(
+      dbQuery<{ state: string; city: string; zip5: string; inspections: string; has_lookup: string }>(
         `
           SELECT
-            COALESCE(NULLIF(state, ''), '') AS state,
-            zip5,
+            COALESCE(NULLIF(s.state, ''), zl.state, '') AS state,
+            COALESCE(NULLIF(s.city, ''), zl.city, '') AS city,
+            s.zip5,
             COUNT(*)::bigint AS inspections
-          FROM rs2_scan
-          WHERE date_utc BETWEEN $1::date AND $2::date
-            AND zip5 <> ''
-          GROUP BY state, zip5
-          ORDER BY inspections DESC, state, zip5
+            ,
+            MAX(CASE WHEN zl.zip5 IS NOT NULL THEN 1 ELSE 0 END)::bigint AS has_lookup
+          FROM rs2_scan s
+          LEFT JOIN rs2_zip_lookup zl ON zl.zip5 = s.zip5
+          WHERE s.date_utc BETWEEN $1::date AND $2::date
+            AND s.zip5 <> ''
+          GROUP BY
+            COALESCE(NULLIF(s.state, ''), zl.state, ''),
+            COALESCE(NULLIF(s.city, ''), zl.city, ''),
+            s.zip5
+          ORDER BY inspections DESC, state, s.zip5, city
         `,
         [start, end]
       ),
@@ -733,17 +740,14 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
         `,
         [start, end]
       ),
-      getZipGeoLookup(),
     ])
 
     response.topZipPostal = topZipPostalRows.map((row) => {
-      const zip5 = row.zip5 || extractZip5(row.zip_postal)
-      const lookup = zip5 ? zipGeoLookup.get(zip5) : undefined
       return {
         zip_postal: row.zip_postal,
-        city: row.city || lookup?.city || "",
-        state: (row.state || lookup?.state || "").toUpperCase(),
-        zip5,
+        city: row.city || "",
+        state: (row.state || "").toUpperCase(),
+        zip5: row.zip5 || extractZip5(row.zip_postal),
         inspections: toInt(row.inspections),
       }
     })
@@ -754,19 +758,19 @@ export async function buildRs2DashboardResponse(params: DashboardParams): Promis
 
     for (const row of stateZipRows) {
       const zip5 = row.zip5 || ""
-      const lookup = zip5 ? zipGeoLookup.get(zip5) : undefined
-      const stateCode = (row.state || lookup?.state || "").toUpperCase()
+      const stateCode = (row.state || "").toUpperCase()
       if (!stateCode || !US_STATE_CODES.has(stateCode)) continue
 
       const inspections = toInt(row.inspections)
       stateTotals.set(stateCode, (stateTotals.get(stateCode) ?? 0) + inspections)
 
-      if (!lookup) continue
-      zip5WithLookup.add(zip5)
-      if (!lookup.city) continue
+      if (zip5 && toInt(row.has_lookup) > 0) {
+        zip5WithLookup.add(zip5)
+      }
+      if (!row.city) continue
 
       const cityTotals = stateCityTotals.get(stateCode) ?? new Map<string, number>()
-      cityTotals.set(lookup.city, (cityTotals.get(lookup.city) ?? 0) + inspections)
+      cityTotals.set(row.city, (cityTotals.get(row.city) ?? 0) + inspections)
       stateCityTotals.set(stateCode, cityTotals)
     }
 

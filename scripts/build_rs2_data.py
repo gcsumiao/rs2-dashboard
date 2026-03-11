@@ -535,6 +535,8 @@ def ensure_geo_placeholder(geo_csv: Path) -> None:
 def geo_lookup_csv_has_payload(geo_csv: Path) -> bool:
     if not geo_csv.exists():
         return False
+    rows_with_geo = 0
+    rows_with_city = 0
     with geo_csv.open(newline="", encoding="utf-8-sig") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
@@ -542,9 +544,17 @@ def geo_lookup_csv_has_payload(geo_csv: Path) -> bool:
             lat = normalize_nullable(row.get("lat", ""))
             lng = normalize_nullable(row.get("lng", ""))
             state = normalize_nullable(row.get("state", "")) or normalize_nullable(row.get("state_id", ""))
-            if zip5 and lat and lng and state:
-                return True
-    return False
+            city = normalize_nullable(row.get("city", ""))
+            if not (zip5 and lat and lng and state):
+                continue
+            rows_with_geo += 1
+            if city:
+                rows_with_city += 1
+    if rows_with_geo == 0:
+        return False
+    # Treat the compact centroid file as "populated" only when city coverage is
+    # broadly available; otherwise prefer the richer raw zip map.
+    return (rows_with_city / rows_with_geo) >= 0.8
 
 
 def artifacts_are_up_to_date(output_dir: Path, inputs: List[Path]) -> bool:
