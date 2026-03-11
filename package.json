@@ -9,7 +9,7 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
-    "db:load:rs2": "python3 scripts/load_rs2_postgres.py",
+    "db:load:rs2": "bash scripts/db_load_rs2.sh",
     "build": "next build",
     "start": "next start",
     "lint": "next lint"

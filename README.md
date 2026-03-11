@@ -49,7 +49,7 @@ npm run db:up
 ```bash
 npm run db:load:rs2
 ```
-If `psycopg` is missing, the loader auto-installs it from `scripts/requirements-rs2-db.txt`.
+`db:load:rs2` bootstraps a project-local virtualenv (`.venv_rs2db`) and installs `psycopg` there, so it does not depend on system Python package permissions.
 
 5. Run dashboard:
 
