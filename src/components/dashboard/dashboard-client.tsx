@@ -268,6 +268,7 @@ export function DashboardClient() {
   const deferredAppliedStart = useDeferredValue(appliedStart)
   const deferredAppliedEnd = useDeferredValue(appliedEnd)
   const deferredAppliedTopN = useDeferredValue(appliedTopN)
+  const deferredAppliedTab = useDeferredValue(appliedTab)
   const lastRequestKeyRef = useRef("")
   const inFlightRef = useRef<AbortController | null>(null)
   const previousMonthRange = getPreviousMonthRange()
@@ -298,7 +299,7 @@ export function DashboardClient() {
   }
 
   useEffect(() => {
-    const requestKey = `${deferredAppliedStart}|${deferredAppliedEnd}|${deferredAppliedTopN}`
+    const requestKey = `${deferredAppliedStart}|${deferredAppliedEnd}|${deferredAppliedTopN}|${deferredAppliedTab}`
     if (lastRequestKeyRef.current === requestKey) {
       return
     }
@@ -312,6 +313,7 @@ export function DashboardClient() {
       start: deferredAppliedStart,
       end: deferredAppliedEnd,
       topN: String(Math.max(1, Math.min(500, Math.floor(deferredAppliedTopN || 100)))),
+      tab: deferredAppliedTab,
       tz: "UTC",
     })
 
@@ -348,7 +350,7 @@ export function DashboardClient() {
     return () => {
       controller.abort()
     }
-  }, [deferredAppliedStart, deferredAppliedEnd, deferredAppliedTopN])
+  }, [deferredAppliedStart, deferredAppliedEnd, deferredAppliedTopN, deferredAppliedTab])
 
   const onApplyCustomRange = () => {
     replaceParams({ start, end })
