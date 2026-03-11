@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS rs2_validation_retailer_month (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rs2_scan_date ON rs2_scan(date_utc);
+CREATE INDEX IF NOT EXISTS idx_rs2_scan_date_user_vin ON rs2_scan(date_utc, user_id, vin_final);
+CREATE INDEX IF NOT EXISTS idx_rs2_scan_date_user_email ON rs2_scan(date_utc, user_id, email);
+CREATE INDEX IF NOT EXISTS idx_rs2_scan_date_vin_meta ON rs2_scan(date_utc, vin_final, vehicle_year, vehicle_make, vehicle_model);
+CREATE INDEX IF NOT EXISTS idx_rs2_scan_date_tool ON rs2_scan(date_utc, tool_name);
+CREATE INDEX IF NOT EXISTS idx_rs2_scan_date_zip5 ON rs2_scan(date_utc, zip5);
 CREATE INDEX IF NOT EXISTS idx_rs2_scan_report ON rs2_scan(report_id);
 CREATE INDEX IF NOT EXISTS idx_rs2_scan_user ON rs2_scan(user_id);
 CREATE INDEX IF NOT EXISTS idx_rs2_scan_account ON rs2_scan(account_id);
@@ -78,6 +83,7 @@ CREATE INDEX IF NOT EXISTS idx_rs2_scan_month ON rs2_scan(source_month);
 CREATE INDEX IF NOT EXISTS idx_rs2_scan_buy_from ON rs2_scan(buy_from);
 
 CREATE INDEX IF NOT EXISTS idx_rs2_buynow_date ON rs2_buynow_click(date_utc);
+CREATE INDEX IF NOT EXISTS idx_rs2_buynow_date_buy_from ON rs2_buynow_click(date_utc, buy_from);
 CREATE INDEX IF NOT EXISTS idx_rs2_buynow_report ON rs2_buynow_click(report_id);
 CREATE INDEX IF NOT EXISTS idx_rs2_buynow_buy_from ON rs2_buynow_click(buy_from);
 CREATE INDEX IF NOT EXISTS idx_rs2_buynow_clicked_account ON rs2_buynow_click(clicked_account_id);
