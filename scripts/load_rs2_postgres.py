@@ -6,12 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
-
-import psycopg
 
 from build_rs2_data import (
     ZIP5_RE,
@@ -28,6 +28,23 @@ from build_rs2_data import (
     parse_datetime,
     resolve_tool_name,
 )
+
+
+def ensure_psycopg():
+    try:
+        import psycopg as module  # type: ignore
+
+        return module
+    except ModuleNotFoundError:
+        requirements = Path(__file__).resolve().parent / "requirements-rs2-db.txt"
+        print("Python package 'psycopg' is missing. Installing requirements...", flush=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "-r", str(requirements)], check=True)
+        import psycopg as module  # type: ignore
+
+        return module
+
+
+psycopg = ensure_psycopg()
 
 
 @dataclass

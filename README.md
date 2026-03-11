@@ -49,6 +49,7 @@ npm run db:up
 ```bash
 npm run db:load:rs2
 ```
+If `psycopg` is missing, the loader auto-installs it from `scripts/requirements-rs2-db.txt`.
 
 5. Run dashboard:
 
