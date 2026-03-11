@@ -12,6 +12,8 @@ Interactive RS2 inspection dashboard backed by local PostgreSQL 18 in Docker.
 
 Snapshot JSON fast-path is removed from dashboard API logic. The API now queries PostgreSQL directly.
 
+Note: this project intentionally uses container port `5433` because this Mac already has a local PostgreSQL instance on `5432`.
+
 Current loader logic:
 - Scan-level base comes from `YYYYMM/fix-part raw extract.csv` (deduped by `DiagnosticReportId`).
 - Part counts come from `FixType` rows in the same fix-part extracts.

@@ -8,9 +8,9 @@ services:
       POSTGRES_PASSWORD: rs2
       POSTGRES_DB: rs2_dashboard
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - rs2_pgdata:/var/lib/postgresql/data
+      - rs2_pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U rs2 -d rs2_dashboard"]
       interval: 5s

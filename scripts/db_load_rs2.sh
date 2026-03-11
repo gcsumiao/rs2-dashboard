@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_DIR="$ROOT_DIR/.venv_rs2db"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 CONTAINER_NAME="${RS2_PG_CONTAINER:-rs2-postgres}"
-DB_URL="${DATABASE_URL:-postgresql://rs2:rs2@localhost:5432/rs2_dashboard?gssencmode=disable}"
+DB_URL="${DATABASE_URL:-postgresql://rs2:rs2@127.0.0.1:5433/rs2_dashboard?gssencmode=disable}"
 
 if [[ ! -d "$VENV_DIR" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
@@ -15,6 +15,25 @@ fi
 "$VENV_DIR/bin/python" -m pip install -r "$ROOT_DIR/scripts/requirements-rs2-db.txt" >/dev/null
 
 (cd "$ROOT_DIR" && docker compose up -d postgres >/dev/null)
+
+ready=0
+for _ in $(seq 1 60); do
+  if docker exec "$CONTAINER_NAME" psql -U rs2 -d rs2_dashboard -tAc "SELECT 1" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  if docker exec "$CONTAINER_NAME" psql -U postgres -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
+  sleep 2
+done
+
+if [[ "$ready" -ne 1 ]]; then
+  echo "PostgreSQL container did not become ready." >&2
+  docker logs "$CONTAINER_NAME" --tail 200 >&2 || true
+  exit 1
+fi
 
 if docker exec "$CONTAINER_NAME" psql -U postgres -d postgres -tAc "SELECT 1" >/dev/null 2>&1; then
   ADMIN_USER="postgres"
