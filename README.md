@@ -46,12 +46,7 @@ npm run build:rs2data:force
 ```bash
 npm run dev
 ```
-
-Or one command:
-
-```bash
-npm run dev:rs2
-```
+`npm run dev` already includes incremental `build:rs2data`.
 
 Open [http://localhost:3000](http://localhost:3000).
 

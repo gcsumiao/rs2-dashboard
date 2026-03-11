@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:rs2": "npm run build:rs2data && next dev",
+    "dev": "npm run build:rs2data && next dev",
+    "dev:rs2": "npm run dev",
+    "dev:force": "npm run build:rs2data:force && next dev",
     "build:rs2data": "python3 scripts/build_rs2_data.py --timezone UTC",
     "build:rs2data:force": "python3 scripts/build_rs2_data.py --timezone UTC --force",
     "build": "next build",
