@@ -35,6 +35,12 @@ npm install
 npm run build:rs2data
 ```
 
+`build:rs2data` now skips rebuild when inputs are unchanged. To force a full rebuild:
+
+```bash
+npm run build:rs2data:force
+```
+
 3. Run app:
 
 ```bash

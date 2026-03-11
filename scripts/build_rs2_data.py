@@ -28,6 +28,15 @@ DEFAULT_START = "2026-02-01"
 DEFAULT_END = "2026-02-28"
 MAX_SNAPSHOT_TOP_N = 500
 MAX_HEAT_POINTS = 8000
+REQUIRED_OUTPUT_FILES = [
+    "scan_day_agg.json",
+    "buynow_click_day_reports.json",
+    "daily_scan_metrics.json",
+    "four_week_lift_summary.json",
+    "snapshot_default.json",
+    "lookups.json",
+    "quality_audit.json",
+]
 
 STATE_CENTROIDS: Dict[str, Tuple[float, float]] = {
     "AL": (32.806671, -86.79113),
@@ -423,6 +432,35 @@ def ensure_geo_placeholder(geo_csv: Path) -> None:
         return
     geo_csv.parent.mkdir(parents=True, exist_ok=True)
     geo_csv.write_text("zip5,lat,lng,state,city\n", encoding="utf-8")
+
+
+def geo_lookup_csv_has_payload(geo_csv: Path) -> bool:
+    if not geo_csv.exists():
+        return False
+    with geo_csv.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            zip5 = normalize_nullable(row.get("zip5", "")) or normalize_nullable(row.get("zip", ""))
+            lat = normalize_nullable(row.get("lat", ""))
+            lng = normalize_nullable(row.get("lng", ""))
+            state = normalize_nullable(row.get("state", "")) or normalize_nullable(row.get("state_id", ""))
+            if zip5 and lat and lng and state:
+                return True
+    return False
+
+
+def artifacts_are_up_to_date(output_dir: Path, inputs: List[Path]) -> bool:
+    outputs = [output_dir / name for name in REQUIRED_OUTPUT_FILES]
+    if any(not output.exists() for output in outputs):
+        return False
+
+    valid_inputs = [path for path in inputs if path.exists()]
+    if not valid_inputs:
+        return False
+
+    latest_input_mtime = max(path.stat().st_mtime for path in valid_inputs)
+    oldest_output_mtime = min(path.stat().st_mtime for path in outputs)
+    return oldest_output_mtime >= latest_input_mtime
 
 
 def pick_primary(counter_by_key: Dict[str, Counter]) -> Dict[str, str]:
@@ -1190,6 +1228,7 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for RS2 artifacts")
     parser.add_argument("--geo-csv", type=Path, default=None, help="ZIP lookup CSV path (zip/zip5 + city/state + lat/lng)")
     parser.add_argument("--timezone", default="UTC", help="Timezone for daily buckets")
+    parser.add_argument("--force", action="store_true", help="Force rebuild even if artifacts are up to date")
     args = parser.parse_args()
 
     project_root = Path(__file__).resolve().parents[1]
@@ -1197,9 +1236,18 @@ def main() -> None:
     raw_dir = args.raw_dir or workspace_root / "raw_data" / "202602"
     mapping_xlsx = args.mapping_xlsx or workspace_root / "RS2tool_mapping" / "RS2_Tool_05122025_01.xlsx"
     output_dir = args.output_dir or project_root / "data" / "rs2"
-    default_geo_source = workspace_root / "zipmap.csv"
-    geo_source_csv = args.geo_csv or (default_geo_source if default_geo_source.exists() else project_root / "data" / "geo" / "us_zip_centroids.csv")
     geo_output_csv = project_root / "data" / "geo" / "us_zip_centroids.csv"
+    workspace_geo_source = workspace_root / "zipmap.csv"
+    ensure_geo_placeholder(geo_output_csv)
+    if args.geo_csv is not None:
+        geo_source_csv = args.geo_csv
+    elif geo_lookup_csv_has_payload(geo_output_csv):
+        # Fast path for repeat builds: reuse local compact centroid table.
+        geo_source_csv = geo_output_csv
+    elif workspace_geo_source.exists():
+        geo_source_csv = workspace_geo_source
+    else:
+        geo_source_csv = geo_output_csv
     tz = ZoneInfo(args.timezone)
 
     # Use 4-week scan extract as primary inspection source to cover 2026-01-01..2026-02-28.
@@ -1212,7 +1260,11 @@ def main() -> None:
         raise FileNotFoundError(f"Missing required inputs: {missing_inputs}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    ensure_geo_placeholder(geo_output_csv)
+    freshness_inputs = [scan_csv, fix_csv, buynow_csv, mapping_xlsx, geo_source_csv, Path(__file__)]
+    if not args.force and artifacts_are_up_to_date(output_dir, freshness_inputs):
+        print(f"RS2 artifacts are up to date: {output_dir}")
+        print("Use --force to rebuild.")
+        return
 
     mapping = load_mapping(mapping_xlsx)
     geo_lookup = load_geo_lookup(geo_source_csv)

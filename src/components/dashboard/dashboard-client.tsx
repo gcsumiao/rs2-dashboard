@@ -1,8 +1,9 @@
 "use client"
 
 import { startTransition, useDeferredValue, useEffect, useRef, useState } from "react"
+import dynamic from "next/dynamic"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { Activity, CalendarDays, Car, Filter, MapPinned, TrendingUp, Users } from "lucide-react"
+import { Activity, CalendarDays, Car, MapPinned, TrendingUp, Users } from "lucide-react"
 import {
   Area,
   AreaChart,
@@ -14,11 +15,18 @@ import {
 } from "recharts"
 import { MetricCard } from "@/components/dashboard/metric-card"
 import { PageHeader } from "@/components/dashboard/page-header"
-import { UsZipHeatmap } from "@/components/dashboard/us-zip-heatmap"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
+
+const UsZipHeatmap = dynamic(
+  () => import("@/components/dashboard/us-zip-heatmap").then((module) => module.UsZipHeatmap),
+  {
+    ssr: false,
+    loading: () => <div className="h-[420px] rounded-lg border border-border bg-muted/40" />,
+  }
+)
 
 type DashboardPayload = {
   meta: {
@@ -111,22 +119,7 @@ type DashboardPayload = {
 const DEFAULT_START = "2026-02-01"
 const DEFAULT_END = "2026-02-28"
 const DEFAULT_TAB = "overview"
-const TAB_OPTIONS = [
-  { id: "overview", label: "Overview" },
-  { id: "users", label: "Users" },
-  { id: "tools", label: "Tools" },
-  { id: "vin", label: "VIN" },
-  { id: "geo", label: "Geo" },
-  { id: "ltl", label: "LTL" },
-  { id: "gaps", label: "Data Gaps" },
-]
-
-const PRESETS = [
-  { id: "7d", label: "7D", days: 7 },
-  { id: "14d", label: "14D", days: 14 },
-  { id: "28d", label: "28D", days: 28 },
-  { id: "mtd", label: "MTD", days: 0 },
-]
+const ALLOWED_TABS = new Set(["overview", "users", "tools", "vin", "geo", "ltl", "gaps"])
 
 function numberLabel(value: number): string {
   return value.toLocaleString()
@@ -140,40 +133,6 @@ function percentLabel(value: number | null): string {
 
 function shortDate(datePt: string): string {
   return datePt.slice(5)
-}
-
-function shiftDate(dateText: string, days: number): string {
-  const date = new Date(`${dateText}T00:00:00Z`)
-  date.setUTCDate(date.getUTCDate() + days)
-  return date.toISOString().slice(0, 10)
-}
-
-function dayDiffInclusive(start: string, end: string): number {
-  const a = new Date(`${start}T00:00:00Z`).getTime()
-  const b = new Date(`${end}T00:00:00Z`).getTime()
-  return Math.floor((b - a) / 86400000) + 1
-}
-
-function inferPreset(start: string, end: string): string | null {
-  const diff = dayDiffInclusive(start, end)
-  if (diff === 7) return "7d"
-  if (diff === 14) return "14d"
-  if (diff === 28) return "28d"
-  const endDate = new Date(`${end}T00:00:00Z`)
-  const mtdStart = `${endDate.getUTCFullYear()}-${`${endDate.getUTCMonth() + 1}`.padStart(2, "0")}-01`
-  if (start === mtdStart) return "mtd"
-  return null
-}
-
-function applyPresetRange(presetId: string, currentEnd: string): { start: string; end: string } {
-  if (presetId === "mtd") {
-    const endDate = new Date(`${currentEnd}T00:00:00Z`)
-    const start = `${endDate.getUTCFullYear()}-${`${endDate.getUTCMonth() + 1}`.padStart(2, "0")}-01`
-    return { start, end: currentEnd }
-  }
-  const preset = PRESETS.find((item) => item.id === presetId)
-  if (!preset || preset.days <= 0) return { start: DEFAULT_START, end: DEFAULT_END }
-  return { start: shiftDate(currentEnd, -(preset.days - 1)), end: currentEnd }
 }
 
 function TopTable({
@@ -239,13 +198,12 @@ export function DashboardClient() {
   const appliedStart = searchParams.get("start") ?? DEFAULT_START
   const appliedEnd = searchParams.get("end") ?? DEFAULT_END
   const appliedTopN = Math.max(1, Math.min(500, Number.parseInt(searchParams.get("topN") ?? "100", 10) || 100))
-  const appliedTab = searchParams.get("tab") ?? DEFAULT_TAB
+  const requestedTab = searchParams.get("tab") ?? DEFAULT_TAB
+  const appliedTab = ALLOWED_TABS.has(requestedTab) ? requestedTab : DEFAULT_TAB
 
   const [start, setStart] = useState(appliedStart)
   const [end, setEnd] = useState(appliedEnd)
   const [topN, setTopN] = useState(appliedTopN)
-  const [tab, setTab] = useState(appliedTab)
-  const [activePreset, setActivePreset] = useState(inferPreset(start, end))
   const [data, setData] = useState<DashboardPayload | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -260,11 +218,9 @@ export function DashboardClient() {
     setStart((prev) => (prev === appliedStart ? prev : appliedStart))
     setEnd((prev) => (prev === appliedEnd ? prev : appliedEnd))
     setTopN((prev) => (prev === appliedTopN ? prev : appliedTopN))
-    setTab((prev) => (prev === appliedTab ? prev : appliedTab))
-    setActivePreset(inferPreset(appliedStart, appliedEnd))
-  }, [appliedStart, appliedEnd, appliedTopN, appliedTab])
+  }, [appliedStart, appliedEnd, appliedTopN])
 
-  const replaceParams = (updates: Partial<Record<"start" | "end" | "topN" | "tab", string>>) => {
+  const replaceParams = (updates: Partial<Record<"start" | "end" | "topN", string>>) => {
     const params = new URLSearchParams(searchParams)
     for (const [key, value] of Object.entries(updates)) {
       if (!value) {
@@ -335,24 +291,12 @@ export function DashboardClient() {
     }
   }, [deferredAppliedStart, deferredAppliedEnd, deferredAppliedTopN])
 
-  const onPresetClick = (presetId: string) => {
-    const next = applyPresetRange(presetId, end)
-    setActivePreset(presetId)
-    replaceParams({ start: next.start, end: next.end })
-  }
-
   const onApplyCustomRange = () => {
-    setActivePreset(inferPreset(start, end))
     replaceParams({ start, end })
   }
 
   const onTopNApply = () => {
     replaceParams({ topN: String(Math.max(1, Math.min(500, Math.floor(topN || 100)))) })
-  }
-
-  const onTabSelect = (nextTab: string) => {
-    setTab(nextTab)
-    replaceParams({ tab: nextTab })
   }
 
   const headerDescription = data
@@ -369,23 +313,7 @@ export function DashboardClient() {
 
       <Card className="sticky top-3 z-10 mb-6 border border-border bg-card/95 backdrop-blur">
         <CardContent className="pt-4">
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-            <div className="flex items-center gap-2 lg:col-span-6">
-              <Filter className="h-4 w-4 text-muted-foreground" />
-              {PRESETS.map((preset) => (
-                <Button
-                  key={preset.id}
-                  variant={activePreset === preset.id ? "default" : "outline"}
-                  size="sm"
-                  className="h-8"
-                  onClick={() => onPresetClick(preset.id)}
-                >
-                  {preset.label}
-                </Button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:col-span-6">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <Input type="date" value={start} onChange={(event) => setStart(event.target.value)} />
               <Input type="date" value={end} onChange={(event) => setEnd(event.target.value)} />
               <Input
@@ -403,24 +331,9 @@ export function DashboardClient() {
                   Apply TopN
                 </Button>
               </div>
-            </div>
           </div>
         </CardContent>
       </Card>
-
-      <div className="mb-6 flex flex-wrap gap-2">
-        {TAB_OPTIONS.map((option) => (
-          <Button
-            key={option.id}
-            variant={tab === option.id ? "default" : "outline"}
-            size="sm"
-            className="h-8"
-            onClick={() => onTabSelect(option.id)}
-          >
-            {option.label}
-          </Button>
-        ))}
-      </div>
 
       {loading && (
         <Card className="mb-6 border border-border bg-card">
@@ -434,7 +347,7 @@ export function DashboardClient() {
         </Card>
       )}
 
-      {!loading && !error && data && tab === "overview" && (
+      {!loading && !error && data && appliedTab === "overview" && (
         <>
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <MetricCard
@@ -540,7 +453,7 @@ export function DashboardClient() {
         </>
       )}
 
-      {!loading && !error && data && tab === "users" && (
+      {!loading && !error && data && appliedTab === "users" && (
         <TopTable
           title="Top 100 USER IDs by Inspections"
           subtitle="Ranked by distinct DiagnosticReportId count in selected range"
@@ -555,7 +468,7 @@ export function DashboardClient() {
         />
       )}
 
-      {!loading && !error && data && tab === "tools" && (
+      {!loading && !error && data && appliedTab === "tools" && (
         <TopTable
           title="Top INNOVA Tool Part # Usage with Diagnostic Part Signals"
           subtitle="Usage ranked by inspections, with ABS/SRS/CEL part row counts from fix-part extract"
@@ -571,7 +484,7 @@ export function DashboardClient() {
         />
       )}
 
-      {!loading && !error && data && tab === "vin" && (
+      {!loading && !error && data && appliedTab === "vin" && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <TopTable
             title="Most Frequently Inspected VINs"
@@ -604,7 +517,7 @@ export function DashboardClient() {
         </div>
       )}
 
-      {!loading && !error && data && tab === "geo" && (
+      {!loading && !error && data && appliedTab === "geo" && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
           <div className="xl:col-span-2">
             <UsZipHeatmap
@@ -640,7 +553,7 @@ export function DashboardClient() {
         </div>
       )}
 
-      {!loading && !error && data && tab === "ltl" && (
+      {!loading && !error && data && appliedTab === "ltl" && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <TopTable
             title="Top LTL Retailers"
@@ -668,7 +581,7 @@ export function DashboardClient() {
         </div>
       )}
 
-      {!loading && !error && data && tab === "gaps" && (
+      {!loading && !error && data && appliedTab === "gaps" && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           <Card className="border border-border bg-card">
             <CardHeader className="pb-2">

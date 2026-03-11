@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Gabarito } from "next/font/google";
+import { Suspense } from "react";
 import { SideNav } from "@/components/nav";
 import { siteConfig } from "@/config/site";
 import { cn } from "@/lib/utils";
@@ -23,7 +24,9 @@ export default function RootLayout({
       <body className={cn("bg-background font-sans", gabarito.variable)}>
         <Providers>
           <div className="flex min-h-[100dvh]">
-            <SideNav />
+            <Suspense fallback={<div className="w-44 shrink-0 border-r border-border bg-slate-100 dark:bg-slate-900" />}>
+              <SideNav />
+            </Suspense>
             <div className="flex-grow overflow-auto">{children}</div>
           </div>
         </Providers>

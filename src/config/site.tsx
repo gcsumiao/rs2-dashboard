@@ -1,4 +1,13 @@
-import { Gauge, type LucideIcon } from "lucide-react";
+import {
+  CarFront,
+  Database,
+  Gauge,
+  type LucideIcon,
+  MapPinned,
+  ShoppingCart,
+  UserRound,
+  Wrench,
+} from "lucide-react";
 
 export type SiteConfig = typeof siteConfig;
 export type Navigation = {
@@ -15,7 +24,37 @@ export const siteConfig = {
 export const navigations: Navigation[] = [
   {
     icon: Gauge,
-    name: "Dashboard",
-    href: "/",
+    name: "Overview",
+    href: "/?tab=overview",
+  },
+  {
+    icon: UserRound,
+    name: "Users",
+    href: "/?tab=users",
+  },
+  {
+    icon: Wrench,
+    name: "Tools",
+    href: "/?tab=tools",
+  },
+  {
+    icon: CarFront,
+    name: "VIN",
+    href: "/?tab=vin",
+  },
+  {
+    icon: MapPinned,
+    name: "Geo",
+    href: "/?tab=geo",
+  },
+  {
+    icon: ShoppingCart,
+    name: "LTL",
+    href: "/?tab=ltl",
+  },
+  {
+    icon: Database,
+    name: "Data Gaps",
+    href: "/?tab=gaps",
   },
 ];
