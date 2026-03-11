@@ -63,6 +63,12 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000).
 
+If you want to run the app against a remote PostgreSQL instance instead of the local Docker database, create `.env.local` with:
+
+```bash
+DATABASE_URL=postgresql://...
+```
+
 ## Daily Workflow
 
 - If raw data did not change: just run `npm run dev`.
@@ -82,7 +88,7 @@ Loader defaults:
 - raw root: `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data` (recursive search)
 - mapping: `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/RS2tool_mapping/RS2_Tool_05122025_01.xlsx`
 - geo source priority:
-  1. `data/geo/us_zip_centroids.csv` (if already populated)
+  1. `data/geo/us_zip_centroids.csv` (only when it has broad city coverage)
   2. `/Users/sumiaoc/Desktop/RS2_dashboard/raw_data/zipmap.csv`
 
 ## Data Rules Implemented
